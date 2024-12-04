@@ -111,7 +111,7 @@ function Update-FieldWithRandomNames {
         Write-Log "Successfully updated $totalRows rows with random names" -Level INFO
     }
     catch {
-        Write-Log "Failed to update names in $TableName.$FieldName: $_" -Level ERROR
+        Write-Log "Failed to update names in $TableName.${FieldName}: $_" -Level ERROR
         throw
     }
     finally {
