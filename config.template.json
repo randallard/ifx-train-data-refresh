@@ -1,0 +1,101 @@
+{
+    "workDirectory": "C:\\temp\\informix_refresh",
+    "environments": {
+        "Live": {
+            "dsn": "PROD_DSN",
+            "server": "prod-server.example.com",
+            "path": "/data/informix/prod",
+            "database": "proddb",
+            "ftp": {
+                "host": "prod-ftp.example.com",
+                "username": "ftpuser",
+                "path": "/transfer"
+            }
+        },
+        "Train": {
+            "dsn": "TRAIN_DSN",
+            "server": "train-server.example.com",
+            "path": "/data/informix/train",
+            "database": "traindb",
+            "ftp": {
+                "host": "train-ftp.example.com",
+                "username": "ftpuser",
+                "path": "/transfer"
+            }
+        },
+        "Test": {
+            "dsn": "TEST_DSN",
+            "server": "test-server.example.com",
+            "path": "/data/informix/test",
+            "database": "testdb",
+            "ftp": {
+                "host": "test-ftp.example.com",
+                "username": "ftpuser",
+                "path": "/transfer"
+            }
+        }
+    },
+    "protectedTables": [
+        "site-variables",
+        "site-codes",
+        "pdf_home"
+    ],
+    "sampling": {
+        "enabled": true,
+        "percentage": 10,
+        "rootTables": [
+            {
+                "name": "customers",
+                "mustIncludeIds": "1001,1002,1005",
+                "relationships": [
+                    {
+                        "childTable": "orders",
+                        "foreignKey": "customer_id",
+                        "relationships": [
+                            {
+                                "childTable": "order_items",
+                                "foreignKey": "order_id"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    },
+    "dataScrubbing": {
+        "fieldsToRandomize": [
+            {
+                "table": "users",
+                "field": "display_name"
+            }
+        ],
+        "queries": [
+            {
+                "description": "Reset user passwords",
+                "query": "UPDATE users SET password = 'test123' WHERE status = 'A'"
+            }
+        ]
+    },
+    "logging": {
+        "enabled": true,
+        "directory": ".\\logs",
+        "retentionDays": 30,
+        "debugMode": false
+    },
+    "email": {
+        "enabled": true,
+        "smtp": {
+            "server": "smtp.uscourts.com",
+            "port": 587,
+            "useSsl": true
+        },
+        "from": "dbrefresh@company.com",
+        "to": ["dba@company.com", "dev-team@company.com"],
+        "errorTo": ["dba-oncall@company.com"]
+    },
+    "parallel": {
+        "enabled": true,
+        "maxJobs": 4,
+        "maxRetries": 3
+    }
+}
