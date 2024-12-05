@@ -206,3 +206,24 @@ For support, please:
 1. Check the log files
 2. Review troubleshooting section
 3. Contact the development team
+
+## Backup Configuration
+
+The tool supports automatic database backups before refresh operations.
+
+Add the following to your `config.json`:
+```json
+{
+    "backup": {
+        "enabled": true,
+        "directory": ".\\backups",
+        "retentionDays": 7
+    }
+}
+```
+
+- `enabled`: Enable/disable automatic backups
+- `directory`: Location to store backup files
+- `retentionDays`: Number of days to retain backup files
+
+Backups are automatically restored if the refresh operation fails.

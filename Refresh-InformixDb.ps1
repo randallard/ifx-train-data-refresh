@@ -1,26 +1,3 @@
-# Informix Database Refresh Tool
-param(
-    [Parameter(Mandatory=$true)]
-    [ValidateSet('LiveToTrain', 'TrainToTest', 'SingleTableLiveToTrain', 'SingleTableTrainToTest', 'FullRefresh')]
-    [string]$Mode,
-    
-    [Parameter(Mandatory=$false)]
-    [string]$TableName,
-    
-    [Parameter(Mandatory=$false)]
-    [string]$ConfigPath = ".\config.json",
-    
-    [PSCredential]$FtpCredential
-)
-
-# Import helper functions
-. .\Functions\Logging.ps1
-. .\Functions\DataSampling.ps1
-. .\Functions\TableTransfer.ps1
-. .\Functions\NameGeneration.ps1
-. .\Functions\DataScrubbing.ps1
-. .\Functions\Progress.ps1
-
 # Load configuration
 try {
     $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
@@ -34,7 +11,16 @@ try {
 
 # Main execution block
 try {
-    Initialize-Logging -LogDir $config.logging.directory
+    Initialize-Logging -LogDir $config.logging.directory	
+        
+	# Backup database if enabled
+	$backupFile = $null
+	if ($config.backup.enabled) {
+		$backupFile = Backup-InformixDatabase -DSN $config.environments.Test.dsn `
+											-DatabaseName $config.environments.Test.database `
+											-BackupDir $config.backup.directory
+	}
+	
     $startTime = Get-Date
     Write-Log "Starting database refresh - Mode: $Mode" -Level INFO
     
