@@ -35,6 +35,11 @@
             }
         }
     },
+    "backup": {
+        "enabled": true,
+        "directory": ".\\backups",
+        "retentionDays": 7
+    },
     "protectedTables": [
         "site-variables",
         "site-codes",
