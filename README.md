@@ -9,10 +9,8 @@ Create `config.yml`:
 databases:
   source:
     name: this_live
-    dsn: live_dsn
   target:
     name: this_train
-    dsn: train_dsn
 
 # Export settings
 export:
