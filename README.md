@@ -37,11 +37,20 @@ excluded_tables:
 
 # Fields to scrub
 scrubbing:
-  randomize_names:
+  # Random name generation for fields
+  random_names:
     - table: customers
       fields: [first_name, last_name]
+      style: github  # Optional: defaults to github if not specified
     - table: employees
       fields: [name]
+      style: github
+    - table: projects
+      fields: [project_name]
+      style: github
+    - table: repositories
+      fields: [repo_name]
+      style: github
   
   standardize:
     address:
@@ -68,85 +77,24 @@ scrubbing:
         - table: employees
           field: email
 
-  github_style_names:
+  # Combine multiple fields with custom separators
+  combination_fields:
     - table: projects
-      field: project_name
+      fields:
+        - source_field: name1
+          random_style: github
+        - source_field: name2
+          random_style: github
+      separator: "-&-"
+      target_field: combo_name
     - table: repositories
-      field: repo_name
-```
-
-Updated `export.sh`:
-```bash
-#!/bin/bash
-
-set -e
-
-CONFIG_FILE="config.yml"
-EXPORT_FILE="db_export.sql"
-SCRUBBED_FILE="db_export_scrubbed.sql"
-
-# Load configuration
-source ./scripts/yaml_parser.sh
-parse_yaml "$CONFIG_FILE"
-
-# Set random seed for consistent sampling
-RANDOM=$(yq e '.export.random_seed' "$CONFIG_FILE")
-
-# Export database schema
-dbschema -d ${databases_source_name} -o schema.sql
-
-# Export essential records and their dependencies
-echo "Exporting essential records..."
-for id in $(yq e '.essential_records.main_table[].id' "$CONFIG_FILE"); do
-    dbexport -d ${databases_source_name} \
-             -o essential_$id.sql \
-             -t "SELECT * FROM main_table WHERE id = $id"
-    
-    if [[ $(yq e '.essential_records.main_table.include_dependencies' "$CONFIG_FILE") == "true" ]]; then
-        for table in $(dbschema -d ${databases_source_name} -t main_table -r); do
-            dbexport -d ${databases_source_name} \
-                     -a essential_$id.sql \
-                     -t "SELECT DISTINCT $table.* FROM $table 
-                         JOIN main_table ON main_table.id = $table.main_id 
-                         WHERE main_table.id = $id"
-        done
-    fi
-done
-
-# Export sampled data
-sample_percentage=$(yq e '.export.sample_percentage' "$CONFIG_FILE")
-batch_size=$(yq e '.export.batch_size' "$CONFIG_FILE")
-
-echo "Exporting ${sample_percentage}% of non-essential records..."
-for table in $(dbschema -d ${databases_source_name} -t); do
-    # Skip excluded tables
-    if echo "$table" | grep -qf <(yq e '.excluded_tables[]' "$CONFIG_FILE"); then
-        continue
-    fi
-    
-    # Get total count
-    total_rows=$(echo "SELECT COUNT(*) FROM $table" | dbaccess ${databases_source_name} - | tail -n 1)
-    sample_size=$(( total_rows * sample_percentage / 100 ))
-    
-    # Export in batches
-    offset=0
-    while [ $offset -lt $sample_size ]; do
-        current_batch=$(( batch_size < (sample_size - offset) ? batch_size : (sample_size - offset) ))
-        dbexport -d ${databases_source_name} \
-                 -a sample_$table.sql \
-                 -t "SELECT FIRST $current_batch SKIP $offset * FROM $table 
-                     WHERE id NOT IN (SELECT id FROM essential_records)"
-        offset=$(( offset + current_batch ))
-    done
-done
-
-# Combine exports
-cat schema.sql essential_*.sql sample_*.sql > "$EXPORT_FILE"
-
-# Apply data scrubbing
-./scripts/scrub_data.sh "$EXPORT_FILE" "$SCRUBBED_FILE"
-
-echo "Export and scrubbing complete. Output: $SCRUBBED_FILE"
+      fields:
+        - source_field: owner_name
+          random_style: github
+        - source_field: repo_name
+          random_style: github
+      separator: "/"
+      target_field: full_path
 ```
 
 ## Usage
@@ -154,7 +102,10 @@ echo "Export and scrubbing complete. Output: $SCRUBBED_FILE"
    - Database connection details
    - Export percentage (how much of the database to sample)
    - Essential record IDs
-   - Scrubbing rules
+   - Scrubbing rules:
+     - Random name generation
+     - Field standardization
+     - Field combinations with custom separators
 2. Place word lists (adjectives.txt, nouns.txt) in the same directory
 3. Run export on source server:
    ```bash
@@ -171,10 +122,23 @@ echo "Export and scrubbing complete. Output: $SCRUBBED_FILE"
 - Samples configurable percentage of remaining records
 - Excludes specified tables
 - Scrubs sensitive data:
-  - Randomizes names
+  - Generates random names in various styles (default: github-style)
   - Standardizes contact information
-  - Generates GitHub-style names
+  - Combines multiple fields with custom separators
 - Preserves training-specific data
+- Consistent data generation using configurable random seed
+
+## Name Generation Styles
+Currently supports:
+- GitHub-style (default): Combines a random adjective and noun with a hyphen (e.g., "hungry-hippo")
+- Additional styles can be added by extending the `generate_name()` function in scrub_data.sh
+
+## Field Combinations
+Allows combining multiple fields with custom separators:
+- Source fields can use random name generation
+- Custom separator between fields
+- Results stored in a specified target field
+- Example: Combining owner and repository names with "/" separator
 
 ## Dependencies
 - Informix database tools (dbaccess, dbexport, dbschema)

@@ -22,11 +22,20 @@ excluded_tables:
   - train_specific_data
 
 scrubbing:
-  randomize_names:
+  # Consolidated name randomization
+  random_names:
     - table: customers
       fields: [first_name, last_name]
+      style: github  # Optional: defaults to github if not specified
     - table: employees
       fields: [name]
+      style: github
+    - table: projects
+      fields: [project_name]
+      style: github
+    - table: repositories
+      fields: [repo_name]
+      style: github
   
   standardize:
     address:
@@ -53,26 +62,20 @@ scrubbing:
         - table: employees
           field: email
 
-  github_style_names:
-    - table: projects
-      field: project_name
-    - table: repositories
-      field: repo_name
-
   combination_fields:
     - table: projects
       fields:
         - source_field: name1
-          github_style: true
+          random_style: github
         - source_field: name2
-          github_style: true
+          random_style: github
       separator: "-&-"
       target_field: combo_name
     - table: repositories
       fields:
         - source_field: owner_name
-          github_style: true
+          random_style: github
         - source_field: repo_name
-          github_style: true
+          random_style: github
       separator: "/"
       target_field: full_path
