@@ -1,0 +1,78 @@
+databases:
+  source:
+    name: this_live
+    dsn: live_dsn
+  target:
+    name: this_train
+    dsn: train_dsn
+
+export:
+  sample_percentage: 20
+  random_seed: 42
+  batch_size: 1000
+
+essential_records:
+  main_table:
+    - id: 1001
+    - id: 1002
+    include_dependencies: true
+
+excluded_tables:
+  - training_config
+  - train_specific_data
+
+scrubbing:
+  randomize_names:
+    - table: customers
+      fields: [first_name, last_name]
+    - table: employees
+      fields: [name]
+  
+  standardize:
+    address:
+      value: "123 Training St, Test City, ST 12345"
+      fields:
+        - table: customers
+          field: address
+        - table: employees
+          field: address
+    
+    phone:
+      value: "555-0123"
+      fields:
+        - table: customers
+          field: phone
+        - table: employees
+          field: phone
+    
+    email:
+      value: "test@example.com"
+      fields:
+        - table: customers
+          field: email
+        - table: employees
+          field: email
+
+  github_style_names:
+    - table: projects
+      field: project_name
+    - table: repositories
+      field: repo_name
+
+  combination_fields:
+    - table: projects
+      fields:
+        - source_field: name1
+          github_style: true
+        - source_field: name2
+          github_style: true
+      separator: "-&-"
+      target_field: combo_name
+    - table: repositories
+      fields:
+        - source_field: owner_name
+          github_style: true
+        - source_field: repo_name
+          github_style: true
+      separator: "/"
+      target_field: full_path
