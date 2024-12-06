@@ -4,27 +4,34 @@ databases:
   target:
     name: this_train
 
+tables:
+  primary_table:
+    name: "your_actual_table_name"  # Replace with your table name
+    primary_key: "id"  # The primary key column of your main table
+  dependencies:
+    foreign_key_column: "primary_id"  # The column name other tables use to reference the primary table
+    primary_key: "id"  # The primary key column used in dependent tables
+
 export:
   sample_percentage: 20
   random_seed: 42
   batch_size: 1000
 
 essential_records:
-  main_table:
+  records:
     - id: 1001
     - id: 1002
-    include_dependencies: true
+  include_dependencies: true
 
 excluded_tables:
   - training_config
   - train_specific_data
 
 scrubbing:
-  # Consolidated name randomization
   random_names:
     - table: customers
       fields: [first_name, last_name]
-      style: github  # Optional: defaults to github if not specified
+      style: github
     - table: employees
       fields: [name]
       style: github

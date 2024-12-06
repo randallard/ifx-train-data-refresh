@@ -12,6 +12,14 @@ databases:
   target:
     name: this_train
 
+tables:
+  primary_table:
+    name: "your_table_name"  # Your main table name
+    primary_key: "id"        # Primary key column of your main table
+  dependencies:
+    foreign_key_column: "primary_id"  # Column other tables use to reference primary table
+    primary_key: "id"                 # Primary key column in dependent tables
+
 # Export settings
 export:
   # Percentage of non-essential records to export (0-100)
@@ -23,10 +31,10 @@ export:
 
 # Essential records to always include
 essential_records:
-  main_table:
+  records:
     - id: 1001
     - id: 1002
-    include_dependencies: true
+  include_dependencies: true
 
 # Tables to exclude from export
 excluded_tables:
@@ -95,9 +103,21 @@ scrubbing:
       target_field: full_path
 ```
 
+## Table Configuration
+The tool now supports fully configurable table and key field names:
+
+1. Primary Table Settings:
+   - `tables.primary_table.name`: Your main table name
+   - `tables.primary_table.primary_key`: The primary key column name in your main table
+
+2. Dependency Settings:
+   - `tables.dependencies.foreign_key_column`: The column name that dependent tables use to reference the primary table
+   - `tables.dependencies.primary_key`: The primary key column name used in dependent tables
+
 ## Usage
 1. Configure `config.yml` with:
    - Database connection details
+   - Table and key field names
    - Export percentage (how much of the database to sample)
    - Essential record IDs
    - Scrubbing rules:
@@ -116,6 +136,7 @@ scrubbing:
    ```
 
 ## Features
+- Configurable table names and key fields
 - Exports essential records with dependencies
 - Samples configurable percentage of remaining records
 - Excludes specified tables

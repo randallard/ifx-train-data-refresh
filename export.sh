@@ -10,6 +10,12 @@ SCRUBBED_FILE="db_export_scrubbed.sql"
 source ./scripts/yaml_parser.sh
 parse_yaml "$CONFIG_FILE"
 
+# Get table configuration
+PRIMARY_TABLE=$(yq e '.tables.primary_table.name' "$CONFIG_FILE")
+PRIMARY_KEY=$(yq e '.tables.primary_table.primary_key' "$CONFIG_FILE")
+FOREIGN_KEY=$(yq e '.tables.dependencies.foreign_key_column' "$CONFIG_FILE")
+DEPENDENT_PRIMARY_KEY=$(yq e '.tables.dependencies.primary_key' "$CONFIG_FILE")
+
 # Set random seed for consistent sampling
 RANDOM=$(yq e '.export.random_seed' "$CONFIG_FILE")
 
@@ -18,18 +24,18 @@ dbschema -d ${databases_source_name} -o schema.sql
 
 # Export essential records and their dependencies
 echo "Exporting essential records..."
-for id in $(yq e '.essential_records.main_table[].id' "$CONFIG_FILE"); do
+for id in $(yq e '.essential_records.records[].id' "$CONFIG_FILE"); do
     dbexport -d ${databases_source_name} \
              -o essential_$id.sql \
-             -t "SELECT * FROM main_table WHERE id = $id"
+             -t "SELECT * FROM $PRIMARY_TABLE WHERE $PRIMARY_KEY = $id"
     
-    if [[ $(yq e '.essential_records.main_table.include_dependencies' "$CONFIG_FILE") == "true" ]]; then
-        for table in $(dbschema -d ${databases_source_name} -t main_table -r); do
+    if [[ $(yq e '.essential_records.include_dependencies' "$CONFIG_FILE") == "true" ]]; then
+        for table in $(dbschema -d ${databases_source_name} -t $PRIMARY_TABLE -r); do
             dbexport -d ${databases_source_name} \
                      -a essential_$id.sql \
                      -t "SELECT DISTINCT $table.* FROM $table 
-                         JOIN main_table ON main_table.id = $table.main_id 
-                         WHERE main_table.id = $id"
+                         JOIN $PRIMARY_TABLE ON $PRIMARY_TABLE.$PRIMARY_KEY = $table.$FOREIGN_KEY 
+                         WHERE $PRIMARY_TABLE.$PRIMARY_KEY = $id"
         done
     fi
 done
@@ -56,7 +62,7 @@ for table in $(dbschema -d ${databases_source_name} -t); do
         dbexport -d ${databases_source_name} \
                  -a sample_$table.sql \
                  -t "SELECT FIRST $current_batch SKIP $offset * FROM $table 
-                     WHERE id NOT IN (SELECT id FROM essential_records)"
+                     WHERE $DEPENDENT_PRIMARY_KEY NOT IN (SELECT $PRIMARY_KEY FROM essential_records)"
         offset=$(( offset + current_batch ))
     done
 done
