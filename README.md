@@ -11,6 +11,11 @@ databases:
     name: this_live
   target:
     name: this_train
+  testing:
+    test_db: test_live        # Database to use as mock production
+    temp_verify: temp_verify  # Temporary verification database
+    verification_marker: "VERIFY_TEST_STRING_XYZ_"  # Marker for excluded tables
+    cleanup_script: remove_verify_db.sh  # Script to remove verification database
 
 tables:
   primary_table:
@@ -135,6 +140,55 @@ The tool now supports fully configurable table and key field names:
    ./import.sh
    ```
 
+## Testing and Verification
+The tool includes comprehensive testing capabilities to verify the export and scrubbing process:
+
+1. Run verification:
+   ```bash
+   ./verify_export.sh
+   ```
+
+### Verification Process
+The verification script performs these steps:
+
+1. Creates a temporary verification database
+   - Copies schema and data from test database
+   - Marks excluded tables for verification
+
+2. Runs export and import process
+   - Exports from test database
+   - Scrubs the data
+   - Imports to verification database
+
+3. Verifies:
+   - Excluded tables remain unchanged
+   - Fields are properly scrubbed
+   - Essential records and dependencies exist
+   - Source database integrity
+
+### Verification Configuration
+Configure testing parameters in config.yml:
+```yaml
+verification:
+  logging:
+    directory: logs
+    prefix: verify_
+  checksums:
+    enabled: true
+    algorithm: md5sum
+  record_counts:
+    enabled: true
+    sample_tables:
+      - customers
+      - employees
+  excluded_table_samples: 3
+```
+
+### Logging
+- Detailed logs are created in the specified logging directory
+- Includes timestamps and success/failure status
+- Logs all verification steps and results
+
 ## Features
 - Configurable table names and key fields
 - Exports essential records with dependencies
@@ -146,6 +200,7 @@ The tool now supports fully configurable table and key field names:
   - Combines multiple fields with custom separators
 - Preserves training-specific data
 - Consistent data generation using configurable random seed
+- Comprehensive testing and verification
 
 ## Name Generation Styles
 Currently supports:

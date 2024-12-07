@@ -3,14 +3,11 @@ databases:
     name: this_live
   target:
     name: this_train
-
-tables:
-  primary_table:
-    name: "your_actual_table_name"  # Replace with your table name
-    primary_key: "id"  # The primary key column of your main table
-  dependencies:
-    foreign_key_column: "primary_id"  # The column name other tables use to reference the primary table
-    primary_key: "id"  # The primary key column used in dependent tables
+  testing:
+    test_db: test_live        # Database to use as mock production
+    temp_verify: temp_verify  # Temporary verification database
+    verification_marker: "VERIFY_TEST_STRING_XYZ_"  # Marker for excluded tables
+    cleanup_script: remove_verify_db.sh  # Script to remove verification database
 
 export:
   sample_percentage: 20
@@ -18,16 +15,31 @@ export:
   batch_size: 1000
 
 essential_records:
-  records:
+  main_table:
     - id: 1001
     - id: 1002
-  include_dependencies: true
+    include_dependencies: true
 
 excluded_tables:
   - training_config
   - train_specific_data
 
+verification:
+  logging:
+    directory: logs
+    prefix: verify_
+  checksums:
+    enabled: true
+    algorithm: md5sum  # or sha256sum
+  record_counts:
+    enabled: true
+    sample_tables:     # Tables to check record counts (empty = all)
+      - customers
+      - employees
+  excluded_table_samples: 3  # Number of top/bottom records to mark
+
 scrubbing:
+  # Consolidated name randomization
   random_names:
     - table: customers
       fields: [first_name, last_name]
