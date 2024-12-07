@@ -7,7 +7,6 @@ databases:
     test_db: test_live        # Database to use as mock production
     temp_verify: temp_verify  # Temporary verification database
     verification_marker: "VERIFY_TEST_STRING_XYZ_"  # Marker for excluded tables
-    cleanup_script: remove_verify_db.sh  # Script to remove verification database
 
 export:
   sample_percentage: 20

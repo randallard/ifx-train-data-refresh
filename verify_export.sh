@@ -242,9 +242,7 @@ read -p "Would you like to remove the temporary verification database now? (y/n)
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     log "INFO" "Removing temporary verification database"
-    ./"$(yq e '.databases.testing.cleanup_script' "$CONFIG_FILE")"
+    echo "DATABASE $TEMP_VERIFY; DROP DATABASE $TEMP_VERIFY;" | dbaccess -
 else
-    log "INFO" "Temporary database kept. To remove it later, run: ./${cleanup_script}"
+    log "INFO" "Temporary database kept. To remove it later, run: echo 'DATABASE $TEMP_VERIFY; DROP DATABASE $TEMP_VERIFY;' | dbaccess -"
 fi
-
-log "INFO" "Verification process complete. Check $LOG_FILE for full details."
