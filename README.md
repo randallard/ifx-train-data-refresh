@@ -154,13 +154,11 @@ The tool supports fully configurable table and key field names:
 
 2. Copy test setup script to container:
    ```bash
-   docker cp setup-test-db.sh informix:/tmp/
+   docker cp scripts/setup-test-db.sh informix:/tmp/
    ```
 
-3. Create test database:
-   ```bash
-   docker exec informix bash /tmp/setup-test-db.sh
-   ```
+3. Create test database by running that script on the container - I had to do this through an interactive shell because my machine wouldn't do the exec with informix user - kept failing to load locale categories
+
 
 This creates a test database with:
 - Essential records (IDs: 1001, 1002) with dependencies
