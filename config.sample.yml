@@ -14,10 +14,10 @@ export:
   batch_size: 1000
 
 essential_records:
-  main_table:
+  records:
     - id: 1001
     - id: 1002
-    include_dependencies: true
+  include_dependencies: true
 
 excluded_tables:
   - training_config
@@ -38,7 +38,6 @@ verification:
   excluded_table_samples: 3  # Number of top/bottom records to mark
 
 scrubbing:
-  # Consolidated name randomization
   random_names:
     - table: customers
       fields: [first_name, last_name]
