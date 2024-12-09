@@ -3,6 +3,23 @@
 ## Overview
 Exports and scrubs data from a live Informix database for training environment use, including essential records and a configurable percentage of the full dataset.
 
+## Table of Contents
+- [Overview](#overview)
+- [Configuration](#configuration)
+- [Table Configuration](#table-configuration)
+- [Local Testing](#local-testing)
+  - [Setting Up Test Environment](#setting-up-test-environment)
+  - [Running Tests](#running-tests)
+- [Production Usage](#production-usage)
+- [Testing and Verification](#testing-and-verification)
+  - [Verification Process](#verification-process)
+  - [Verification Configuration](#verification-configuration)
+  - [Logging](#logging)
+- [Features](#features)
+- [Name Generation Styles](#name-generation-styles)
+- [Field Combinations](#field-combinations)
+- [Dependencies](#dependencies)
+
 ## Configuration
 Create `config.yml`:
 ```yaml
@@ -109,7 +126,7 @@ scrubbing:
 ```
 
 ## Table Configuration
-The tool now supports fully configurable table and key field names:
+The tool supports fully configurable table and key field names:
 
 1. Primary Table Settings:
    - `tables.primary_table.name`: Your main table name
@@ -119,7 +136,54 @@ The tool now supports fully configurable table and key field names:
    - `tables.dependencies.foreign_key_column`: The column name that dependent tables use to reference the primary table
    - `tables.dependencies.primary_key`: The primary key column name used in dependent tables
 
-## Usage
+## Local Testing
+
+### Setting Up Test Environment
+1. Start Informix in Docker:
+   ```bash
+   docker run -d \
+     --name informix \
+     -p 9088:9088 \
+     -p 9089:9089 \
+     -p 27017:27017 \
+     -p 27018:27018 \
+     -p 27883:27883 \
+     -e LICENSE=accept \
+     ibmcom/informix-developer-database:latest
+   ```
+
+2. Copy test setup script to container:
+   ```bash
+   docker cp setup-test-db.sh informix:/tmp/
+   ```
+
+3. Create test database:
+   ```bash
+   docker exec informix bash /tmp/setup-test-db.sh
+   ```
+
+This creates a test database with:
+- Essential records (IDs: 1001, 1002) with dependencies
+- 100 customers
+- 50 employees
+- 200 projects
+- 300 repositories
+- Excluded tables with test data
+
+### Running Tests
+1. Copy scripts to container:
+   ```bash
+   docker cp . informix:/opt/scrubber/
+   ```
+
+2. Run verification:
+   ```bash
+   docker exec -it informix bash
+   cd /opt/scrubber
+   ./verify_export.sh
+   ```
+
+## Production Usage
 1. Configure `config.yml` with:
    - Database connection details
    - Table and key field names
