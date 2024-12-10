@@ -29,7 +29,7 @@ databases:
   target:
     name: this_train
   testing:
-    test_db: test_live        # Database to use as mock production
+    test_live: test_live        # Database to use as mock production
     temp_verify: temp_verify  # Temporary verification database
     verification_marker: "VERIFY_TEST_STRING_XYZ_"  # Marker for excluded tables
     cleanup_script: remove_verify_db.sh  # Script to remove verification database
@@ -137,6 +137,8 @@ The tool supports fully configurable table and key field names:
    - `tables.dependencies.primary_key`: The primary key column name used in dependent tables
 
 ## Local Testing
+
+For the quickest local verify, copy config.sample.yml to be config.yml.  The setup-test-db sets up a verify for exactly that config.yml - if you do have your db local, then you can skip straight to verify_export.sh with your custom config.yml
 
 ### Setting Up Test Environment
 1. Start Informix in Docker:

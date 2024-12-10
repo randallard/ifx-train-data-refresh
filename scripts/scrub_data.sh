@@ -2,13 +2,22 @@
 
 set -e
 
-INPUT_FILE=$1
-OUTPUT_FILE=$2
+WORK_DIR="$HOME/work"
+INPUT_FILE="$WORK_DIR/schema.sql"
+OUTPUT_FILE="$WORK_DIR/combined.sql"
 CONFIG_FILE="config.yml"
 
+# Create temp file in work directory
+TEMP_FILE=$(mktemp "$WORK_DIR/tmp.XXXXXX")
+cp "$INPUT_FILE" "$TEMP_FILE" || {
+    echo "Failed to create temporary file for processing"
+    exit 1
+}
+
 # Load word lists
-ADJECTIVES=($(cat adjectives.txt))
-NOUNS=($(cat nouns.txt))
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+ADJECTIVES=($(cat "$SCRIPT_DIR/adjectives.txt"))
+NOUNS=($(cat "$SCRIPT_DIR/nouns.txt"))
 
 # Generate random name based on style
 generate_name() {
@@ -86,4 +95,8 @@ while IFS= read -r rule; do
 done < <(yq e '.scrubbing.standardize.*.fields[]' "$CONFIG_FILE")
 
 # Move processed file to output
-mv "$TEMP_FILE" "$OUTPUT_FILE"
+mv "$TEMP_FILE" "$OUTPUT_FILE" || {
+    echo "Failed to create final output file"
+    rm -f "$TEMP_FILE"  # Cleanup temp file if move fails
+    exit 1
+}

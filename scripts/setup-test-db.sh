@@ -1,10 +1,48 @@
 #!/bin/bash
 
-echo "DATABASE sysmaster;
-DROP DATABASE IF EXISTS test_db;
-CREATE DATABASE test_db;" | dbaccess - 2>/dev/null
+check_dependencies() {
+    local missing_tools=()
 
-dbaccess test_db << 'EOF'
+    # Check for essential Unix tools
+    for cmd in sed grep awk tr tail mktemp chmod; do
+        if ! command -v $cmd &> /dev/null; then
+            missing_tools+=("$cmd")
+        fi
+    done
+
+    if [ ${#missing_tools[@]} -ne 0 ]; then
+        echo "Error: Missing essential tools: ${missing_tools[*]}"
+        echo "These will need to be installed before verifying the data refresh scripts."
+        exit 1
+    fi
+
+    # Create local bin directory if it doesn't exist
+    mkdir -p ~/bin
+    export PATH=$PATH:~/bin
+
+    # Check for yq
+    if ! command -v yq &> /dev/null; then
+        echo "Installing yq to ~/bin..."
+        if command -v curl &> /dev/null; then
+            curl -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o ~/bin/yq
+        elif command -v wget &> /dev/null; then
+            wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O ~/bin/yq
+        else
+            echo "Error: Neither curl nor wget available. Please install yq manually."
+            exit 1
+        fi
+        chmod +x ~/bin/yq
+    fi
+}
+
+# Check and install dependencies
+check_dependencies
+
+echo "DATABASE sysmaster;
+DROP DATABASE IF EXISTS test_live;
+CREATE DATABASE test_live;" | dbaccess - 2>/dev/null
+
+dbaccess test_live << 'EOF'
 CREATE TABLE customers (
     id SERIAL,
     first_name VARCHAR(50),

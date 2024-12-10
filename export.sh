@@ -6,6 +6,19 @@ CONFIG_FILE="config.yml"
 EXPORT_FILE="db_export.sql"
 SCRUBBED_FILE="db_export_scrubbed.sql"
 
+WORK_DIR="$HOME/work"
+mkdir -p "$WORK_DIR"
+chmod 755 "$WORK_DIR" 
+
+# Export database schema
+dbschema -d ${databases_source_name} -ss > "$WORK_DIR/schema.sql" || {
+    echo "Failed to export schema"
+    exit 1
+}
+
+# Export essential records and their dependencies
+echo "Exporting essential records..."
+
 # Load configuration
 source ./scripts/yaml_parser.sh
 parse_yaml "$CONFIG_FILE"

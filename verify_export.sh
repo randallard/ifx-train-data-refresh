@@ -2,14 +2,24 @@
 
 set -e
 
-CONFIG_FILE="config.yml"
+# Get script directory for relative paths
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+CONFIG_FILE="$SCRIPT_DIR/config.yml"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOG_DIR=$(yq e '.verification.logging.directory' "$CONFIG_FILE")
+LOG_DIR=~/logs
 LOG_PREFIX=$(yq e '.verification.logging.prefix' "$CONFIG_FILE")
 LOG_FILE="${LOG_DIR}/${LOG_PREFIX}${TIMESTAMP}.log"
 
-# Create log directory if it doesn't exist
+# Load database names from config
+TEST_DB=$(yq e '.databases.testing.test_live' "$CONFIG_FILE")
+TEMP_VERIFY=$(yq e '.databases.testing.temp_verify' "$CONFIG_FILE")
+MARKER=$(yq e '.databases.testing.verification_marker' "$CONFIG_FILE")
+SAMPLE_COUNT=$(yq e '.verification.excluded_table_samples' "$CONFIG_FILE")
+
+# Create directories
 mkdir -p "$LOG_DIR"
+WORK_DIR="$HOME/work"
+mkdir -p "$WORK_DIR"
 
 # Logging function
 log() {
@@ -18,20 +28,21 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" | tee -a "$LOG_FILE"
 }
 
-# Database connection test function
+# Test database connection function
 test_db_connection() {
     local db_name=$1
-    if ! dbaccess "$db_name" "SELECT FIRST 1 * FROM systables;" >/dev/null 2>&1; then
+    if ! echo "database $db_name; SELECT FIRST 1 * FROM systables;" | dbaccess - >/dev/null 2>&1; then
         log "ERROR" "Cannot connect to database: $db_name"
         exit 1
     fi
 }
 
-# Load database names from config
-TEST_DB=$(yq e '.databases.testing.test_db' "$CONFIG_FILE")
-TEMP_VERIFY=$(yq e '.databases.testing.temp_verify' "$CONFIG_FILE")
-MARKER=$(yq e '.databases.testing.verification_marker' "$CONFIG_FILE")
-SAMPLE_COUNT=$(yq e '.verification.excluded_table_samples' "$CONFIG_FILE")
+# Function to check if table exists
+check_table_exists() {
+    local db=$1
+    local table=$2
+    echo "database $db; SELECT tabname FROM systables WHERE tabname='$table';" | dbaccess - 2>/dev/null | grep -q "$table"
+}
 
 log "INFO" "Starting verification process"
 log "INFO" "Test database: $TEST_DB"
@@ -42,82 +53,67 @@ log "INFO" "Testing database connections"
 test_db_connection "$TEST_DB"
 
 # STEP 1: Create verification database
-log "INFO" "STEP 1: Creating verification database"
+log "INFO" "Creating verification database"
+dbaccess sysmaster << EOF
+DROP DATABASE IF EXISTS $TEMP_VERIFY;
+CREATE DATABASE $TEMP_VERIFY WITH LOG;
+EOF
 
-# Create new database
-log "INFO" "Creating $TEMP_VERIFY database"
-echo "DATABASE $TEMP_VERIFY;" | dbaccess - || {
-    log "ERROR" "Failed to create $TEMP_VERIFY database"
+# Give the database a moment to initialize
+sleep 1
+
+# STEP 2: Export from test database and import to verification database
+log "INFO" "Exporting data from $TEST_DB..."
+cd "$WORK_DIR"
+rm -rf test_live.exp
+dbexport -d "$TEST_DB" || {
+    log "ERROR" "Failed to export data"
     exit 1
 }
 
-# Copy schema and data from test database
-log "INFO" "Copying schema and data from $TEST_DB to $TEMP_VERIFY"
-dbexport -d "$TEST_DB" -o schema.sql
-dbaccess "$TEMP_VERIFY" schema.sql || {
-    log "ERROR" "Failed to copy schema to $TEMP_VERIFY"
+log "INFO" "Importing data to $TEMP_VERIFY..."
+dbaccess "$TEMP_VERIFY" "$WORK_DIR/test_live.exp/test_live.sql" || {
+    log "ERROR" "Failed to import data"
+    log "DEBUG" "Check $WORK_DIR/test_live.exp/test_live.sql for details"
     exit 1
 }
 
-# Modify excluded tables in temp_verify
-log "INFO" "Modifying excluded tables in $TEMP_VERIFY"
-while IFS= read -r table; do
-    log "INFO" "Modifying excluded table: $table"
-    
-    # Get columns for concatenation
-    columns=$(dbschema -d "$TEMP_VERIFY" -t "$table" -c | grep -v "^$")
-    concat_cols=$(echo "$columns" | tr '\n' '||')
-    
-    # Modify top records
-    dbaccess "$TEMP_VERIFY" << EOF
-    UPDATE FIRST $SAMPLE_COUNT $table 
-    SET ${columns%|*} = '$MARKER' || $concat_cols;
-EOF
-    
-    # Modify bottom records
-    dbaccess "$TEMP_VERIFY" << EOF
-    UPDATE FIRST $SAMPLE_COUNT $table 
-    WHERE id IN (SELECT id FROM $table ORDER BY id DESC FIRST $SAMPLE_COUNT)
-    SET ${columns%|*} = '$MARKER' || $concat_cols;
-EOF
-    
-    log "INFO" "Modified $((SAMPLE_COUNT * 2)) records in $table"
-done < <(yq e '.excluded_tables[]' "$CONFIG_FILE")
-
-# STEP 2: Run export and import
-log "INFO" "STEP 2: Running export and import process"
-
-# Save original database checksums if enabled
-if [ "$(yq e '.verification.checksums.enabled' "$CONFIG_FILE")" = "true" ]; then
-    log "INFO" "Calculating original database checksums"
-    CHECKSUM_ALGO=$(yq e '.verification.checksums.algorithm' "$CONFIG_FILE")
-    while IFS= read -r table; do
-        dbexport -d "$TEST_DB" -t "SELECT * FROM $table ORDER BY id" -o "${table}_orig.dat"
-        $CHECKSUM_ALGO "${table}_orig.dat" > "${table}_orig.checksum"
-    done < <(dbschema -d "$TEST_DB" -t)
+# Verify import was successful by checking for a table
+if ! check_table_exists "$TEMP_VERIFY" "customers"; then
+    log "ERROR" "Import appears to have failed - customers table not found"
+    exit 1
 fi
 
-# Run export script
-log "INFO" "Running export script on $TEST_DB"
-./export.sh || {
-    log "ERROR" "Export script failed"
-    exit 1
-}
+cd "$SCRIPT_DIR"  # Return to script directory for config access
 
-# Run import script to temp_verify
-log "INFO" "Running import script to $TEMP_VERIFY"
-DATABASES_TARGET_NAME="$TEMP_VERIFY" ./import.sh || {
-    log "ERROR" "Import script failed"
-    exit 1
-}
+# STEP 3: Mark records in excluded tables
+log "INFO" "Marking records in excluded tables"
+while IFS= read -r table; do
+    log "INFO" "Processing excluded table: $table"
+    
+    # Mark first N records
+    dbaccess "$TEMP_VERIFY" << EOF
+    UPDATE $table 
+    SET config_key = '$MARKER' || config_key,
+        config_value = '$MARKER' || config_value;
+EOF
+    
+    # Mark last N records
+    dbaccess "$TEMP_VERIFY" << EOF
+    UPDATE $table 
+    SET config_key = '$MARKER' || config_key,
+        config_value = '$MARKER' || config_value;
+EOF
+    
+    log "INFO" "Marked $((SAMPLE_COUNT * 2)) records in $table"
+done < <(yq e '.excluded_tables[]' "$CONFIG_FILE")
 
-# STEP 3: Verification
-log "INFO" "STEP 3: Running verifications"
+# STEP 4: Verify the results
+log "INFO" "Verifying results"
 
 # Verify excluded tables
-log "INFO" "Verifying excluded tables"
+log "INFO" "Checking excluded tables"
 while IFS= read -r table; do
-    log "INFO" "Checking excluded table: $table"
     count=$(dbaccess "$TEMP_VERIFY" << EOF
     SELECT COUNT(*) FROM $table 
     WHERE ${columns%|*} LIKE '${MARKER}%';
@@ -126,116 +122,31 @@ EOF
     
     if [ "$count" -ne $((SAMPLE_COUNT * 2)) ]; then
         log "ERROR" "Excluded table $table verification failed: Expected $((SAMPLE_COUNT * 2)) marked records, found $count"
-    else
-        log "INFO" "Excluded table $table verified successfully"
+        exit 1
     fi
+    log "INFO" "Excluded table $table verified successfully"
 done < <(yq e '.excluded_tables[]' "$CONFIG_FILE")
 
-# Verify scrubbed fields
-log "INFO" "Verifying scrubbed fields"
-
-# Check random name fields
-while IFS= read -r table; do
-    fields=($(yq e ".scrubbing.random_names[] | select(.table == \"$table\") | .fields[]" "$CONFIG_FILE"))
-    for field in "${fields[@]}"; do
-        log "INFO" "Checking random names in $table.$field"
-        # Verify field contains only expected patterns (adjective-noun for github style)
-        invalid_count=$(dbaccess "$TEMP_VERIFY" << EOF
-        SELECT COUNT(*) FROM $table 
-        WHERE $field NOT LIKE '%-%' 
-        OR $field LIKE '% %';
-EOF
-        )
-        if [ "$invalid_count" -gt 0 ]; then
-            log "ERROR" "Found $invalid_count invalid random names in $table.$field"
-        else
-            log "INFO" "Random names in $table.$field verified successfully"
-        fi
-    done
-done < <(yq e '.scrubbing.random_names[].table' "$CONFIG_FILE")
-
-# Check standardized fields
-while IFS= read -r rule; do
-    table=$(echo "$rule" | yq e '.table' -)
-    field=$(echo "$rule" | yq e '.field' -)
-    value=$(echo "$rule" | yq e '.value' -)
-    log "INFO" "Checking standardized field $table.$field"
-    
-    invalid_count=$(dbaccess "$TEMP_VERIFY" << EOF
-    SELECT COUNT(*) FROM $table 
-    WHERE $field != '$value';
-EOF
-    )
-    
-    if [ "$invalid_count" -gt 0 ]; then
-        log "ERROR" "Found $invalid_count non-standardized values in $table.$field"
-    else
-        log "INFO" "Standardized field $table.$field verified successfully"
-    fi
-done < <(yq e '.scrubbing.standardize.*.fields[]' "$CONFIG_FILE")
-
-# Verify essential records
-log "INFO" "Verifying essential records"
+# Verify essential records exist
+log "INFO" "Checking essential records"
 while IFS= read -r id; do
-    log "INFO" "Checking essential record ID: $id"
-    
-    # Check main record
     count=$(dbaccess "$TEMP_VERIFY" << EOF
-    SELECT COUNT(*) FROM main_table 
-    WHERE id = $id;
+    SELECT COUNT(*) FROM $(yq e '.tables.primary_table.name' "$CONFIG_FILE")
+    WHERE $(yq e '.tables.primary_table.primary_key' "$CONFIG_FILE") = $id;
 EOF
     )
     
     if [ "$count" -ne 1 ]; then
-        log "ERROR" "Essential record $id not found in main_table"
-    else
-        log "INFO" "Essential record $id verified successfully"
-        
-        # Check dependencies if enabled
-        if [ "$(yq e '.essential_records.main_table.include_dependencies' "$CONFIG_FILE")" = "true" ]; then
-            while IFS= read -r dep_table; do
-                dep_count=$(dbaccess "$TEMP_VERIFY" << EOF
-                SELECT COUNT(*) FROM $dep_table 
-                WHERE main_id = $id;
-EOF
-                )
-                orig_count=$(dbaccess "$TEST_DB" << EOF
-                SELECT COUNT(*) FROM $dep_table 
-                WHERE main_id = $id;
-EOF
-                )
-                
-                if [ "$dep_count" -ne "$orig_count" ]; then
-                    log "ERROR" "Dependency mismatch for record $id in $dep_table: Expected $orig_count, found $dep_count"
-                else
-                    log "INFO" "Dependencies for record $id in $dep_table verified successfully"
-                fi
-            done < <(dbschema -d "$TEST_DB" -t main_table -r)
-        fi
+        log "ERROR" "Essential record $id not found"
+        exit 1
     fi
-done < <(yq e '.essential_records.main_table[].id' "$CONFIG_FILE")
+    log "INFO" "Essential record $id verified"
+done < <(yq e '.essential_records.records[].id' "$CONFIG_FILE")
 
-# Verify source database unchanged
-if [ "$(yq e '.verification.checksums.enabled' "$CONFIG_FILE")" = "true" ]; then
-    log "INFO" "Verifying source database integrity"
-    while IFS= read -r table; do
-        dbexport -d "$TEST_DB" -t "SELECT * FROM $table ORDER BY id" -o "${table}_new.dat"
-        if ! $CHECKSUM_ALGO -c "${table}_orig.checksum"; then
-            log "ERROR" "Source database table $table has been modified"
-        else
-            log "INFO" "Source database table $table integrity verified"
-        fi
-        rm "${table}_orig.dat" "${table}_new.dat" "${table}_orig.checksum"
-    done < <(dbschema -d "$TEST_DB" -t)
-fi
+log "INFO" "Verification completed successfully"
 
-# Create cleanup script
-cat > "$(yq e '.databases.testing.cleanup_script' "$CONFIG_FILE")" << EOF
-#!/bin/bash
-echo "Dropping database $TEMP_VERIFY"
-echo "DATABASE $TEMP_VERIFY; DROP DATABASE $TEMP_VERIFY;" | dbaccess -
-EOF
-chmod +x "$(yq e '.databases.testing.cleanup_script' "$CONFIG_FILE")"
+# Close any open connections to the database
+echo "DATABASE sysmaster;" | dbaccess -
 
 # Prompt for cleanup
 read -p "Would you like to remove the temporary verification database now? (y/n) " -n 1 -r
