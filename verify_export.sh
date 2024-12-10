@@ -4,6 +4,9 @@ set -e
 
 # Get script directory for relative paths
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$SCRIPT_DIR/scripts/verification_functions.sh"
+
+# Configuration and logging setup
 CONFIG_FILE="$SCRIPT_DIR/config.yml"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_DIR=~/logs
@@ -16,41 +19,20 @@ TEMP_VERIFY=$(yq e '.databases.testing.temp_verify' "$CONFIG_FILE")
 MARKER=$(yq e '.databases.testing.verification_marker' "$CONFIG_FILE")
 SAMPLE_COUNT=$(yq e '.verification.excluded_table_samples' "$CONFIG_FILE")
 
-# Create directories
+# Create required directories
 mkdir -p "$LOG_DIR"
 WORK_DIR="$HOME/work"
 mkdir -p "$WORK_DIR"
 
-# Logging function
-log() {
-    local level=$1
-    local message=$2
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" | tee -a "$LOG_FILE"
-}
-
-# Test database connection function
-test_db_connection() {
-    local db_name=$1
-    if ! echo "database $db_name; SELECT FIRST 1 * FROM systables;" | dbaccess - >/dev/null 2>&1; then
-        log "ERROR" "Cannot connect to database: $db_name"
-        exit 1
-    fi
-}
-
-# Function to check if table exists
-check_table_exists() {
-    local db=$1
-    local table=$2
-    echo "database $db; SELECT tabname FROM systables WHERE tabname='$table';" | dbaccess - 2>/dev/null | grep -q "$table"
-}
-
+# Start verification process
 log "INFO" "Starting verification process"
 log "INFO" "Test database: $TEST_DB"
 log "INFO" "Verification database: $TEMP_VERIFY"
+log "INFO" "Working directory: $WORK_DIR"
 
 # Test database connections
 log "INFO" "Testing database connections"
-test_db_connection "$TEST_DB"
+test_db_connection "$TEST_DB" || exit 1
 
 # STEP 1: Create verification database
 log "INFO" "Creating verification database"
@@ -62,90 +44,75 @@ EOF
 # Give the database a moment to initialize
 sleep 1
 
-# STEP 2: Export from test database and import to verification database
+# STEP 2: Export data
 log "INFO" "Exporting data from $TEST_DB..."
 cd "$WORK_DIR"
-rm -rf test_live.exp
-dbexport -d "$TEST_DB" || {
+rm -rf "${TEST_DB}.exp"
+dbexport -d "$TEST_DB" > "$WORK_DIR/dbexport.log" 2>&1 || {
     log "ERROR" "Failed to export data"
+    log "DEBUG" "dbexport log:"
+    cat "$WORK_DIR/dbexport.log"
     exit 1
 }
 
-log "INFO" "Importing data to $TEMP_VERIFY..."
-dbaccess "$TEMP_VERIFY" "$WORK_DIR/test_live.exp/test_live.sql" || {
-    log "ERROR" "Failed to import data"
-    log "DEBUG" "Check $WORK_DIR/test_live.exp/test_live.sql for details"
+EXPORT_DIR="$WORK_DIR/${TEST_DB}.exp"
+cd "$EXPORT_DIR"
+
+# First run the full SQL to set up schema and permissions
+cd "$HOME/work/test_live.exp" && \
+dbaccess temp_verify test_live.sql
+
+# Then load all the data
+echo "LOAD FROM 'custo00100.unl' DELIMITER '|' INSERT INTO customers;
+LOAD FROM 'emplo00101.unl' DELIMITER '|' INSERT INTO employees;
+LOAD FROM 'proje00102.unl' DELIMITER '|' INSERT INTO projects;
+LOAD FROM 'repos00103.unl' DELIMITER '|' INSERT INTO repositories;
+LOAD FROM 'train00104.unl' DELIMITER '|' INSERT INTO training_config;
+LOAD FROM 'train00105.unl' DELIMITER '|' INSERT INTO train_specific_data;" | dbaccess temp_verify -
+
+for table in "${!table_files[@]}"; do
+    unl_file="${table_files[$table]}"
+    if [ -f "$unl_file" ]; then
+        log "DEBUG" "Loading data for table $table from $unl_file"
+        echo "LOAD FROM '$unl_file' DELIMITER '|' INSERT INTO $table;" | dbaccess "$TEMP_VERIFY" - || {
+            log "ERROR" "Failed to load data into table $table"
+            continue
+        }
+    else
+        log "WARNING" "Data file $unl_file not found for table $table"
+    fi
+done
+
+cd "$SCRIPT_DIR"
+
+# STEP 5: Verify data was imported correctly
+log "INFO" "Verifying data import..."
+for table in "${!table_files[@]}"; do
+    orig_count=$(echo "SELECT COUNT(*) FROM $table;" | dbaccess "$TEST_DB" - | grep -v "^$" | grep -v "count" | tr -d ' ')
+    new_count=$(echo "SELECT COUNT(*) FROM $table;" | dbaccess "$TEMP_VERIFY" - | grep -v "^$" | grep -v "count" | tr -d ' ')
+    log "DEBUG" "Table $table - Original: $orig_count, Imported: $new_count"
+    
+    if [ "$orig_count" != "$new_count" ]; then
+        log "ERROR" "Count mismatch in table $table"
+        log "ERROR" "Original: $orig_count, Imported: $new_count"
+        exit 1
+    fi
+done
+
+# STEP 6: Run verifications
+verify_excluded_tables "$TEMP_VERIFY" "$MARKER" "$SAMPLE_COUNT" || {
+    log "ERROR" "Excluded tables verification failed"
     exit 1
 }
 
-# Verify import was successful by checking for a table
-if ! check_table_exists "$TEMP_VERIFY" "customers"; then
-    log "ERROR" "Import appears to have failed - customers table not found"
+verify_essential_records "$TEMP_VERIFY" || {
+    log "ERROR" "Essential records verification failed"
     exit 1
-fi
-
-cd "$SCRIPT_DIR"  # Return to script directory for config access
-
-# STEP 3: Mark records in excluded tables
-log "INFO" "Marking records in excluded tables"
-while IFS= read -r table; do
-    log "INFO" "Processing excluded table: $table"
-    
-    # Mark first N records
-    dbaccess "$TEMP_VERIFY" << EOF
-    UPDATE $table 
-    SET config_key = '$MARKER' || config_key,
-        config_value = '$MARKER' || config_value;
-EOF
-    
-    # Mark last N records
-    dbaccess "$TEMP_VERIFY" << EOF
-    UPDATE $table 
-    SET config_key = '$MARKER' || config_key,
-        config_value = '$MARKER' || config_value;
-EOF
-    
-    log "INFO" "Marked $((SAMPLE_COUNT * 2)) records in $table"
-done < <(yq e '.excluded_tables[]' "$CONFIG_FILE")
-
-# STEP 4: Verify the results
-log "INFO" "Verifying results"
-
-# Verify excluded tables
-log "INFO" "Checking excluded tables"
-while IFS= read -r table; do
-    count=$(dbaccess "$TEMP_VERIFY" << EOF
-    SELECT COUNT(*) FROM $table 
-    WHERE ${columns%|*} LIKE '${MARKER}%';
-EOF
-    )
-    
-    if [ "$count" -ne $((SAMPLE_COUNT * 2)) ]; then
-        log "ERROR" "Excluded table $table verification failed: Expected $((SAMPLE_COUNT * 2)) marked records, found $count"
-        exit 1
-    fi
-    log "INFO" "Excluded table $table verified successfully"
-done < <(yq e '.excluded_tables[]' "$CONFIG_FILE")
-
-# Verify essential records exist
-log "INFO" "Checking essential records"
-while IFS= read -r id; do
-    count=$(dbaccess "$TEMP_VERIFY" << EOF
-    SELECT COUNT(*) FROM $(yq e '.tables.primary_table.name' "$CONFIG_FILE")
-    WHERE $(yq e '.tables.primary_table.primary_key' "$CONFIG_FILE") = $id;
-EOF
-    )
-    
-    if [ "$count" -ne 1 ]; then
-        log "ERROR" "Essential record $id not found"
-        exit 1
-    fi
-    log "INFO" "Essential record $id verified"
-done < <(yq e '.essential_records.records[].id' "$CONFIG_FILE")
+}
 
 log "INFO" "Verification completed successfully"
 
-# Close any open connections to the database
+# Close connections
 echo "DATABASE sysmaster;" | dbaccess -
 
 # Prompt for cleanup
@@ -153,7 +120,11 @@ read -p "Would you like to remove the temporary verification database now? (y/n)
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     log "INFO" "Removing temporary verification database"
-    echo "DATABASE $TEMP_VERIFY; DROP DATABASE $TEMP_VERIFY;" | dbaccess -
+    dbaccess sysmaster << EOF
+        DROP DATABASE $TEMP_VERIFY;
+EOF
+    log "INFO" "Temporary database removed"
 else
-    log "INFO" "Temporary database kept. To remove it later, run: echo 'DATABASE $TEMP_VERIFY; DROP DATABASE $TEMP_VERIFY;' | dbaccess -"
+    log "INFO" "Temporary database kept. To remove it later, run:"
+    echo "echo 'DATABASE sysmaster; DROP DATABASE $TEMP_VERIFY;' | dbaccess -"
 fi
