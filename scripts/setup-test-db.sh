@@ -87,25 +87,46 @@ CREATE TABLE train_specific_data (
     data_value VARCHAR(255)
 );
 
-INSERT INTO train_specific_data VALUES (0, 'sample_data', 'test_value_1');
-INSERT INTO train_specific_data VALUES (0, 'test_case', 'scenario_1');
+-- Insert essential records first (IDs 1001 and 1002)
+INSERT INTO customers (id, first_name, last_name, email, address, phone)
+    VALUES (1001, 'Essential1', 'User1', 'essential1@example.com', '123 Essential St', '555-1001');
+INSERT INTO customers (id, first_name, last_name, email, address, phone)
+    VALUES (1002, 'Essential2', 'User2', 'essential2@example.com', '456 Essential St', '555-1002');
 
-INSERT INTO customers VALUES (0, 'John1', 'Doe1', 'test1@example.com', '123 Test St', '555-0101');
-INSERT INTO customers VALUES (0, 'John2', 'Doe2', 'test2@example.com', '123 Test St', '555-0102');
-INSERT INTO customers VALUES (0, 'John3', 'Doe3', 'test3@example.com', '123 Test St', '555-0103');
+-- Insert regular test data
+INSERT INTO customers (first_name, last_name, email, address, phone)
+    VALUES ('John1', 'Doe1', 'test1@example.com', '123 Test St', '555-0101');
+INSERT INTO customers (first_name, last_name, email, address, phone)
+    VALUES ('John2', 'Doe2', 'test2@example.com', '123 Test St', '555-0102');
+INSERT INTO customers (first_name, last_name, email, address, phone)
+    VALUES ('John3', 'Doe3', 'test3@example.com', '123 Test St', '555-0103');
 
-INSERT INTO employees VALUES (0, 'Employee1', 'emp1@example.com', '456 Work St', '555-0201');
-INSERT INTO employees VALUES (0, 'Employee2', 'emp2@example.com', '456 Work St', '555-0202');
-INSERT INTO employees VALUES (0, 'Employee3', 'emp3@example.com', '456 Work St', '555-0203');
+INSERT INTO employees (name, email, address, phone)
+    VALUES ('Employee1', 'emp1@example.com', '456 Work St', '555-0201');
+INSERT INTO employees (name, email, address, phone)
+    VALUES ('Employee2', 'emp2@example.com', '456 Work St', '555-0202');
+INSERT INTO employees (name, email, address, phone)
+    VALUES ('Employee3', 'emp3@example.com', '456 Work St', '555-0203');
 
-INSERT INTO projects VALUES (0, 'Project1', 'Name1_1', 'Name2_1', NULL);
-INSERT INTO projects VALUES (0, 'Project2', 'Name1_2', 'Name2_2', NULL);
+INSERT INTO projects (project_name, name1, name2)
+    VALUES ('Project1', 'Name1_1', 'Name2_1');
+INSERT INTO projects (project_name, name1, name2)
+    VALUES ('Project2', 'Name1_2', 'Name2_2');
 
-INSERT INTO repositories VALUES (0, 'Owner1', 'Repo1', NULL);
-INSERT INTO repositories VALUES (0, 'Owner2', 'Repo2', NULL);
+INSERT INTO repositories (owner_name, repo_name)
+    VALUES ('Owner1', 'Repo1');
+INSERT INTO repositories (owner_name, repo_name)
+    VALUES ('Owner2', 'Repo2');
 
-INSERT INTO training_config VALUES (0, 'test_mode', 'true');
-INSERT INTO training_config VALUES (0, 'debug_level', 'info');
+INSERT INTO training_config (config_key, config_value)
+    VALUES ('test_mode', 'true');
+INSERT INTO training_config (config_key, config_value)
+    VALUES ('debug_level', 'info');
+
+INSERT INTO train_specific_data (data_key, data_value)
+    VALUES ('sample_data', 'test_value_1');
+INSERT INTO train_specific_data (data_key, data_value)
+    VALUES ('test_case', 'scenario_1');
 EOF
 
 echo "Database setup complete."
