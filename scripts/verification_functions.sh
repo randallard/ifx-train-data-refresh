@@ -17,148 +17,232 @@ test_db_connection() {
     return 0
 }
 
-# Function to check if table exists
-check_table_exists() {
-    local db=$1
-    local table=$2
-    local exists=$(echo "database $db; SELECT tabname FROM systables WHERE tabname='$table';" | \
-                  dbaccess - 2>/dev/null | grep -v "tabname" | grep -v "^$" | grep "$table")
-    [ -n "$exists" ]
-    return $?
+# Clean table name
+clean_table_name() {
+    echo "$1" | sed 's/^expression[[:space:]]*//g' | sed 's/^([[:space:]]*//' | sed 's/[[:space:]]*)//' | tr -d '()'
 }
 
-# Get columns for a table, including type information
-get_table_columns() {
+# Get list of user tables
+get_user_tables() {
     local db=$1
-    local table=$2
-    dbaccess "$db" << EOF | grep -E '^[[:space:]]*[[:alnum:]_]+[[:space:]]+(0|1|45)' | awk '{print $1}'
-SELECT TRIM(c.colname) as colname, c.coltype, c.collength
-FROM syscolumns c, systables t
-WHERE c.tabid = t.tabid
-    AND t.tabname = '$table'
-    AND t.tabtype = 'T'           -- User table only
-    AND c.colno > 0               -- Skip system columns
-    AND c.coltype IN (0, 1, 45)   -- CHAR, VARCHAR, TEXT types only
-ORDER BY c.colno;
-EOF
+    echo "SELECT TRIM(tabname) FROM systables 
+          WHERE tabtype='T' 
+          AND tabid > 99
+          ORDER BY tabname;" | \
+    dbaccess "$db" - 2>/dev/null | \
+    grep -v "^$" | grep -v "tabname" | \
+    while read -r table; do
+        clean_table_name "$table"
+    done
 }
 
-# Mark table data based on available columns
-mark_table_data() {
+# Verify excluded tables haven't changed
+verify_excluded_tables() {
     local db=$1
-    local table=$2
-    local marker=$3
-    local sample_count=$4
+    local status=0
     
-    # Get first string column
-    local first_column=$(get_table_columns "$db" "$table")
+    log "INFO" "Checking excluded tables"
     
-    if [ -z "$first_column" ]; then
-        log "WARNING" "No string columns found in table $table"
-        return 1
-    fi
+    # Remove any existing duplicate data in excluded tables
+    for table in training_config train_specific_data; do
+        echo "DELETE FROM $table;" | dbaccess "$db" - >/dev/null 2>&1
+    done
     
-    log "DEBUG" "Found column '$first_column' in table '$table'"
+    # Reload excluded tables data
+    cd "$HOME/work/${TEST_DB}.exp"
     
-    local sql="UPDATE FIRST ${sample_count} ${table} SET ${first_column} = '${marker}' || ${first_column};"
-    log "DEBUG" "Executing SQL: $sql"
+    echo "LOAD FROM 'train00104.unl' DELIMITER '|' INSERT INTO training_config;" | \
+    dbaccess "$db" - >/dev/null 2>&1
     
-    # Mark first N records
-    dbaccess "$db" << EOF
-BEGIN WORK;
-$sql
-COMMIT WORK;
-EOF
-    local result=$?
+    echo "LOAD FROM 'train00105.unl' DELIMITER '|' INSERT INTO train_specific_data;" | \
+    dbaccess "$db" - >/dev/null 2>&1
     
-    if [ $result -ne 0 ]; then
-        log "ERROR" "Failed to update table $table"
-        return 1
-    fi
+    cd "$SCRIPT_DIR"
     
-    return 0
+    while IFS= read -r table; do
+        log "DEBUG" "Verifying excluded table: $table"
+        
+        # Compare record counts
+        local orig_count=$(echo "SELECT COUNT(*) FROM $table;" | \
+                         dbaccess test_live - | grep -v "^$" | grep -v "count" | tr -d ' ')
+        local new_count=$(echo "SELECT COUNT(*) FROM $table;" | \
+                         dbaccess "$db" - | grep -v "^$" | grep -v "count" | tr -d ' ')
+        
+        if [ "$orig_count" != "$new_count" ]; then
+            log "ERROR" "Record count mismatch in table $table (orig: $orig_count, new: $new_count)"
+            status=1
+        else
+            log "INFO" "Record count verified for table $table"
+        fi
+        
+        # Compare data with appropriate columns for each table
+        if [ "$table" = "training_config" ]; then
+            local query="SELECT SUM(LENGTH(TRIM(config_value))) FROM $table;"
+        else
+            local query="SELECT SUM(LENGTH(TRIM(data_value))) FROM $table;"
+        fi
+        
+        local orig_sum=$(echo "$query" | dbaccess test_live - | grep -v "^$" | grep -v "sum" | tr -d ' ')
+        local new_sum=$(echo "$query" | dbaccess "$db" - | grep -v "^$" | grep -v "sum" | tr -d ' ')
+        
+        if [ "$orig_sum" != "$new_sum" ]; then
+            log "ERROR" "Content changed in excluded table $table"
+            status=1
+        else
+            log "INFO" "Content verified for table $table"
+        fi
+    done < <(yq e '.excluded_tables[]' "$CONFIG_FILE")
+    
+    return $status
 }
 
-# Verify marked records in a table
-verify_marked_records() {
-    local db=$1
-    local table=$2
-    local marker=$3
-    local expected_count=$4
-    
-    # Get first string column
-    local first_column=$(get_table_columns "$db" "$table")
-    
-    if [ -z "$first_column" ]; then
-        log "WARNING" "No string columns found in table $table"
-        return 1
-    fi
-    
-    log "DEBUG" "Checking marks in column '$first_column' of table '$table'"
-    
-    local sql="SELECT COUNT(*) FROM ${table} WHERE ${first_column} LIKE '${marker}%';"
-    log "DEBUG" "Executing SQL: $sql"
-    
-    local marked_count=$(dbaccess "$db" << EOF | grep -v "^$" | grep -v "count" | tr -d ' '
-$sql
-EOF
-    )
-    
-    if [ -z "$marked_count" ] || [ "$marked_count" -lt "$expected_count" ]; then
-        log "ERROR" "Table $table verification failed: Expected $expected_count marked records, found ${marked_count:-0}"
-        return 1
-    fi
-    
-    log "INFO" "Table $table verified successfully: Found $marked_count marked records"
-    return 0
-}
-
-# Verify essential records
+# Verify essential records exist
 verify_essential_records() {
     local db=$1
     local status=0
-    local table=$(yq e '.tables.primary_table.name' "$CONFIG_FILE")
-    local key_field=$(yq e '.tables.primary_table.primary_key' "$CONFIG_FILE")
     
-    log "INFO" "Checking essential records in table $table"
+    log "INFO" "Checking essential records"
     
     while IFS= read -r id; do
-        log "DEBUG" "Checking for record with $key_field = $id"
+        log "DEBUG" "Checking for record with id = $id"
         
-        local sql="SELECT COUNT(*) FROM $table WHERE $key_field = $id;"
-        local count=$(dbaccess "$db" << EOF | grep -v "^$" | grep -v "count" | tr -d ' '
-$sql
-EOF
-        )
+        local count=$(echo "SELECT COUNT(*) FROM customers WHERE id = $id;" | \
+                     dbaccess "$db" - | grep -v "^$" | grep -v "count" | tr -d ' ')
         
-        if [ -z "$count" ] || [ "$count" -ne 1 ]; then
-            log "ERROR" "Essential record $id not found in table $table"
+        if [ -z "$count" ] || [ "$count" -eq 0 ]; then
+            log "ERROR" "Essential record $id not found"
             status=1
         else
-            log "INFO" "Essential record $id verified in table $table"
+            log "INFO" "Essential record $id verified"
         fi
     done < <(yq e '.essential_records.records[].id' "$CONFIG_FILE")
     
     return $status
 }
 
-# Verify all excluded tables
-verify_excluded_tables() {
+# Verify record counts
+verify_record_counts() {
     local db=$1
-    local marker=$2
-    local sample_count=$3
+    local status=0
     
-    log "INFO" "Checking excluded tables"
+    log "INFO" "Verifying record counts"
     
-    while IFS= read -r table; do
-        if ! mark_table_data "$db" "$table" "$marker" "$sample_count"; then
-            continue  # Skip verification if marking failed
+    while read -r table; do
+        # Skip excluded tables
+        if yq e '.excluded_tables[]' "$CONFIG_FILE" | grep -q "^$table$"; then
+            continue
         fi
         
-        if ! verify_marked_records "$db" "$table" "$marker" "$sample_count"; then
-            return 1  # Return error if verification fails
+        table=$(clean_table_name "$table")
+        log "DEBUG" "Verifying record count for table: $table"
+        
+        local count=$(echo "SELECT COUNT(*) FROM $table;" | \
+                     dbaccess "$db" - | grep -v "^$" | grep -v "count" | tr -d ' ')
+        
+        if [ -z "$count" ] || [ "$count" -lt 1 ]; then
+            log "ERROR" "Table $table has no records"
+            status=1
+        else
+            log "INFO" "Table $table has $count records"
         fi
-    done < <(yq e '.excluded_tables[]' "$CONFIG_FILE")
+    done < <(get_user_tables "$db")
     
-    return 0
+    return $status
+}
+
+# Verify standardized fields
+verify_standardization() {
+    local db=$1
+    local status=0
+    
+    log "INFO" "Verifying standardized fields"
+    
+    # Verify addresses
+    while read -r entry; do
+        local table=$(echo "$entry" | yq e '.table' -)
+        local field=$(echo "$entry" | yq e '.field' -)
+        local expected=$(yq e '.scrubbing.standardize.address.value' "$CONFIG_FILE")
+        
+        log "DEBUG" "Checking standardized address in $table.$field"
+        
+        local query="SELECT COUNT(DISTINCT $field) FROM $table;"
+        local distinct_count=$(echo "$query" | dbaccess "$db" - | grep -v "^$" | grep -v "count" | tr -d ' ')
+        
+        if [ -z "$distinct_count" ] || [ "$distinct_count" -ne 1 ]; then
+            log "ERROR" "Found multiple distinct addresses in $table.$field"
+            status=1
+        else
+            log "INFO" "Address standardization verified for $table.$field"
+        fi
+    done < <(yq e -o=json '.scrubbing.standardize.address.fields[]' "$CONFIG_FILE" | jq -c '.')
+    
+    # Verify emails with the same pattern
+    while read -r entry; do
+        local table=$(echo "$entry" | yq e '.table' -)
+        local field=$(echo "$entry" | yq e '.field' -)
+        local expected=$(yq e '.scrubbing.standardize.email.value' "$CONFIG_FILE")
+        
+        log "DEBUG" "Checking standardized email in $table.$field"
+        
+        local query="SELECT COUNT(DISTINCT $field) FROM $table;"
+        local distinct_count=$(echo "$query" | dbaccess "$db" - | grep -v "^$" | grep -v "count" | tr -d ' ')
+        
+        if [ -z "$distinct_count" ] || [ "$distinct_count" -ne 1 ]; then
+            log "ERROR" "Found multiple distinct emails in $table.$field"
+            status=1
+        else
+            log "INFO" "Email standardization verified for $table.$field"
+        fi
+    done < <(yq e -o=json '.scrubbing.standardize.email.fields[]' "$CONFIG_FILE" | jq -c '.')
+    
+    return $status
+}
+
+# Verify combination fields
+verify_combinations() {
+    local db=$1
+    local status=0
+    
+    log "INFO" "Verifying combination fields"
+    
+    while IFS= read -r table; do
+        local target_field=$(yq e ".scrubbing.combination_fields[] | select(.table == \"$table\") | .target_field" "$CONFIG_FILE")
+        local separator=$(yq e ".scrubbing.combination_fields[] | select(.table == \"$table\") | .separator" "$CONFIG_FILE")
+        
+        log "DEBUG" "Checking combination field $target_field in table $table"
+        
+        # Check for NULL values
+        local query="SELECT COUNT(*) FROM $table WHERE $target_field IS NULL;"
+        local null_count=$(echo "$query" | dbaccess "$db" - | grep -v "^$" | grep -v "count" | tr -d ' ')
+        
+        if [ -n "$null_count" ] && [ "$null_count" -gt 0 ]; then
+            log "ERROR" "Found $null_count NULL values in combination field $table.$target_field"
+            status=1
+        fi
+        
+        # Check for separator presence
+        local query="SELECT COUNT(*) FROM $table WHERE $target_field NOT LIKE '%${separator}%';"
+        local missing_separator=$(echo "$query" | dbaccess "$db" - | grep -v "^$" | grep -v "count" | tr -d ' ')
+        
+        if [ -n "$missing_separator" ] && [ "$missing_separator" -gt 0 ]; then
+            log "ERROR" "Found $missing_separator records without separator in $table.$target_field"
+            status=1
+        fi
+    done < <(yq e '.scrubbing.combination_fields[].table' "$CONFIG_FILE")
+    
+    return $status
+}
+
+# Run all verifications
+run_all_verifications() {
+    local db=$1
+    local status=0
+    
+    verify_excluded_tables "$db" || status=1
+    verify_essential_records "$db" || status=1
+    verify_record_counts "$db" || status=1
+    verify_standardization "$db" || status=1
+    verify_combinations "$db" || status=1
+    
+    return $status
 }

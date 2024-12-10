@@ -24,6 +24,16 @@ mkdir -p "$LOG_DIR"
 WORK_DIR="$HOME/work"
 mkdir -p "$WORK_DIR"
 
+# Define table name mappings (truncated to full)
+declare -A TABLE_MAPPINGS=(
+    ["custo"]="customers"
+    ["emplo"]="employees"
+    ["proje"]="projects"
+    ["repos"]="repositories"
+    ["train"]="training_config"
+    ["train"]="train_specific_data"
+)
+
 # Start verification process
 log "INFO" "Starting verification process"
 log "INFO" "Test database: $TEST_DB"
@@ -34,7 +44,7 @@ log "INFO" "Working directory: $WORK_DIR"
 log "INFO" "Testing database connections"
 test_db_connection "$TEST_DB" || exit 1
 
-# STEP 1: Create verification database
+# Create verification database
 log "INFO" "Creating verification database"
 dbaccess sysmaster << EOF
 DROP DATABASE IF EXISTS $TEMP_VERIFY;
@@ -44,8 +54,8 @@ EOF
 # Give the database a moment to initialize
 sleep 1
 
-# STEP 2: Export data
-log "INFO" "Exporting data from $TEST_DB..."
+# Export and import test data
+log "INFO" "Exporting and importing test data..."
 cd "$WORK_DIR"
 rm -rf "${TEST_DB}.exp"
 dbexport -d "$TEST_DB" > "$WORK_DIR/dbexport.log" 2>&1 || {
@@ -55,65 +65,56 @@ dbexport -d "$TEST_DB" > "$WORK_DIR/dbexport.log" 2>&1 || {
     exit 1
 }
 
-EXPORT_DIR="$WORK_DIR/${TEST_DB}.exp"
-cd "$EXPORT_DIR"
+# Import to verification database
+cd "$HOME/work/${TEST_DB}.exp"
+dbaccess "$TEMP_VERIFY" "${TEST_DB}.sql" || {
+    log "ERROR" "Failed to import database tables"
+    exit 1
+}
 
-# First run the full SQL to set up schema and permissions
-cd "$HOME/work/test_live.exp" && \
-dbaccess temp_verify test_live.sql
+# Get list of tables from the database
+tables=($(echo "SELECT TRIM(tabname) FROM systables WHERE tabtype='T' AND tabid > 99;" | \
+          dbaccess "$TEMP_VERIFY" - 2>/dev/null | grep -v "^$" | grep -v "tabname"))
 
-# Then load all the data
-echo "LOAD FROM 'custo00100.unl' DELIMITER '|' INSERT INTO customers;
-LOAD FROM 'emplo00101.unl' DELIMITER '|' INSERT INTO employees;
-LOAD FROM 'proje00102.unl' DELIMITER '|' INSERT INTO projects;
-LOAD FROM 'repos00103.unl' DELIMITER '|' INSERT INTO repositories;
-LOAD FROM 'train00104.unl' DELIMITER '|' INSERT INTO training_config;
-LOAD FROM 'train00105.unl' DELIMITER '|' INSERT INTO train_specific_data;" | dbaccess temp_verify -
-
-for table in "${!table_files[@]}"; do
-    unl_file="${table_files[$table]}"
+# Load all data files
+for unl_file in *.unl; do
     if [ -f "$unl_file" ]; then
-        log "DEBUG" "Loading data for table $table from $unl_file"
-        echo "LOAD FROM '$unl_file' DELIMITER '|' INSERT INTO $table;" | dbaccess "$TEMP_VERIFY" - || {
-            log "ERROR" "Failed to load data into table $table"
+        # Extract the base name without sequence number and .unl
+        base_name=$(echo "$unl_file" | sed 's/\([[:alpha:]]*\)[0-9]*\.unl$/\1/')
+        
+        # Find the matching full table name
+        table_name=""
+        for t in "${tables[@]}"; do
+            if [[ "$t" == "$base_name"* ]]; then
+                table_name="$t"
+                break
+            fi
+        done
+        
+        if [ -z "$table_name" ]; then
+            log "WARNING" "Could not find matching table for $unl_file, skipping..."
             continue
+        fi
+        
+        log "DEBUG" "Loading data for table $table_name from $unl_file"
+        echo "LOAD FROM '$unl_file' DELIMITER '|' INSERT INTO $table_name;" | \
+        dbaccess "$TEMP_VERIFY" - || {
+            log "ERROR" "Failed to load data from $unl_file into table $table_name"
+            exit 1
         }
-    else
-        log "WARNING" "Data file $unl_file not found for table $table"
     fi
 done
 
 cd "$SCRIPT_DIR"
 
-# STEP 5: Verify data was imported correctly
-log "INFO" "Verifying data import..."
-for table in "${!table_files[@]}"; do
-    orig_count=$(echo "SELECT COUNT(*) FROM $table;" | dbaccess "$TEST_DB" - | grep -v "^$" | grep -v "count" | tr -d ' ')
-    new_count=$(echo "SELECT COUNT(*) FROM $table;" | dbaccess "$TEMP_VERIFY" - | grep -v "^$" | grep -v "count" | tr -d ' ')
-    log "DEBUG" "Table $table - Original: $orig_count, Imported: $new_count"
-    
-    if [ "$orig_count" != "$new_count" ]; then
-        log "ERROR" "Count mismatch in table $table"
-        log "ERROR" "Original: $orig_count, Imported: $new_count"
-        exit 1
-    fi
-done
-
-# STEP 6: Run verifications
-verify_excluded_tables "$TEMP_VERIFY" "$MARKER" "$SAMPLE_COUNT" || {
-    log "ERROR" "Excluded tables verification failed"
+# Run all verifications
+log "INFO" "Running verifications..."
+if ! run_all_verifications "$TEMP_VERIFY"; then
+    log "ERROR" "One or more verifications failed"
     exit 1
-}
+fi
 
-verify_essential_records "$TEMP_VERIFY" || {
-    log "ERROR" "Essential records verification failed"
-    exit 1
-}
-
-log "INFO" "Verification completed successfully"
-
-# Close connections
-echo "DATABASE sysmaster;" | dbaccess -
+log "INFO" "All verifications completed successfully"
 
 # Prompt for cleanup
 read -p "Would you like to remove the temporary verification database now? (y/n) " -n 1 -r
@@ -121,7 +122,7 @@ echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     log "INFO" "Removing temporary verification database"
     dbaccess sysmaster << EOF
-        DROP DATABASE $TEMP_VERIFY;
+DROP DATABASE $TEMP_VERIFY;
 EOF
     log "INFO" "Temporary database removed"
 else
