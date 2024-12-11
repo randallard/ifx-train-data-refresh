@@ -51,19 +51,41 @@ dbexport -d "$SOURCE_DB" > "$WORK_DIR/dbexport.log" 2>&1 || {
     exit 1
 }
 
+# Give the export a moment to complete writing files
+sleep 1
+
+# Debug: List files in export directory
+log "INFO" "Checking export directory contents..." "$LOG_FILE"
+ls -la "$WORK_DIR/${SOURCE_DB}.exp" >> "$LOG_FILE"
+
 # Move to export directory
-cd "$HOME/work/${SOURCE_DB}.exp"
+cd "$WORK_DIR/${SOURCE_DB}.exp"
 
 # Apply data scrubbing if scrub_data.sh exists
 if [ -f "$SCRIPT_DIR/scripts/scrub_data.sh" ]; then
     log "INFO" "Applying data scrubbing..." "$LOG_FILE"
-    "$SCRIPT_DIR/scripts/scrub_data.sh" "${SOURCE_DB}.sql" "${SOURCE_DB}_scrubbed.sql" || {
+    
+    # Wait for SQL file to be fully written
+    for i in {1..5}; do
+        if [ -f "$WORK_DIR/${SOURCE_DB}.exp/${SOURCE_DB}.sql" ]; then
+            break
+        fi
+        log "INFO" "Waiting for export file to be ready... (attempt $i)" "$LOG_FILE"
+        sleep 1
+    done
+
+    if [ ! -f "$WORK_DIR/${SOURCE_DB}.exp/${SOURCE_DB}.sql" ]; then
+        log "ERROR" "Export SQL file not found after waiting" "$LOG_FILE"
+        exit 1
+    fi
+
+    "$SCRIPT_DIR/scripts/scrub_data.sh" "$WORK_DIR/${SOURCE_DB}.exp/${SOURCE_DB}.sql" "$WORK_DIR/${SOURCE_DB}.exp/${SOURCE_DB}_scrubbed.sql" || {
         log "ERROR" "Data scrubbing failed" "$LOG_FILE"
         exit 1
     }
 else
     log "WARNING" "scrub_data.sh not found - skipping data scrubbing" "$LOG_FILE"
-    cp "${SOURCE_DB}.sql" "${SOURCE_DB}_scrubbed.sql"
+    cp "$WORK_DIR/${SOURCE_DB}.exp/${SOURCE_DB}.sql" "$WORK_DIR/${SOURCE_DB}.exp/${SOURCE_DB}_scrubbed.sql"
 fi
 
 log "INFO" "Export process completed successfully" "$LOG_FILE"
