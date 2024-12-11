@@ -156,10 +156,21 @@ For the quickest local verify, copy config.sample.yml to be config.yml.  The set
 
 2. Copy test setup script to container:
    ```bash
-   docker cp scripts/setup-test-db.sh informix:/tmp/
+   docker cp . informix:/opt/scrubber
    ```
 
-3. Create test database by running that script on the container - I had to do this through an interactive shell because my machine wouldn't do the exec with informix user - kept failing to load locale categories
+3. Sometimes you'll need to fix newlines on the container
+
+    if you get this error:
+    ```linux
+    ./export.sh: /opt/scrubber/scripts/scrub_data.sh: /bin/bash^M: bad interpreter: No such file or directory
+    ```
+    then do this:
+    ```linux
+    [informix@e2ce5df6987f scrubber]$ sudo sed -i 's/\r$//' scripts/scrub_data.sh
+    ```
+
+4. Create test database by running that script on the container - I had to do this through an interactive shell because my machine wouldn't do the exec with informix user - kept failing to load locale categories
 
 
 This creates a test database with:
