@@ -319,17 +319,83 @@ verify_dependent_records() {
     return $status
 }
 
-# Add this to the run_all_verifications function
+# Add this at the top of verification_functions.sh with other functions
+
+# Get all dependent tables that have the specified foreign key
+get_dependent_tables() {
+    local db=$1
+    local foreign_key=$2
+    
+    run_sql "$db" "
+        SELECT DISTINCT TRIM(t.tabname) 
+        FROM syscolumns c
+        JOIN systables t ON c.tabid = t.tabid 
+        WHERE t.tabtype = 'T'
+        AND TRIM(c.colname) = '${foreign_key}';" | clean_sql_output
+}
+
+# Verify dependencies for a single essential record
+verify_record_dependencies() {
+    local db=$1
+    local record_id=$2
+    local status=0
+    
+    # Expected dependencies based on our test data structure
+    declare -A expected_counts=(
+        ["employees"]=">=1"    # At least 1 employee
+        ["projects"]=">=1"     # At least 1 project
+        ["repositories"]=">=1"  # At least 1 repository linked via projects
+    )
+    
+    # Check direct dependencies (employees and projects)
+    for table in "employees" "projects"; do
+        local count
+        count=$(get_simple_count "$db" "
+            SELECT COUNT(*) FROM $table 
+            WHERE customer_id = $record_id;")
+        
+        local expected="${expected_counts[$table]}"
+        local min_count="${expected#>=}"
+        
+        if [ "${count:-0}" -lt "$min_count" ]; then
+            log "ERROR" "Essential record $record_id: Expected ${expected} ${table}, found ${count:-0}" "$LOG_FILE"
+            status=1
+        else
+            log "INFO" "Essential record $record_id: Found ${count} ${table}" "$LOG_FILE"
+        fi
+    done
+    
+    # Check indirect dependencies (repositories linked through projects)
+    local repo_count
+    repo_count=$(get_simple_count "$db" "
+        SELECT COUNT(DISTINCT r.id) 
+        FROM repositories r 
+        JOIN projects p ON r.project_id = p.id 
+        WHERE p.customer_id = $record_id;")
+    
+    local expected="${expected_counts["repositories"]}"
+    local min_count="${expected#>=}"
+    
+    if [ "${repo_count:-0}" -lt "$min_count" ]; then
+        log "ERROR" "Essential record $record_id: Expected ${expected} repositories, found ${repo_count:-0}" "$LOG_FILE"
+        status=1
+    else
+        log "INFO" "Essential record $record_id: Found ${repo_count} repositories" "$LOG_FILE"
+    fi
+    
+    return $status
+}
+
+# Verify all essential record dependencies
 verify_essential_dependencies() {
     local db=$1
     local status=0
     
     log "INFO" "Verifying dependencies for essential records..." "$LOG_FILE"
     
-    # Check each essential record's dependencies
     while IFS= read -r id; do
-        if ! verify_dependent_records "$db" "$id"; then
-            log "ERROR" "Missing dependencies for essential record ${id}" "$LOG_FILE"
+        if ! verify_record_dependencies "$db" "$id"; then
+            log "ERROR" "Dependency verification failed for essential record ${id}" "$LOG_FILE"
             status=1
         fi
     done < <(yq e '.essential_records.records[].id' "$CONFIG_FILE")
