@@ -132,20 +132,43 @@ process_random_names() {
 
 # Function to process standardization rules
 process_standardization() {
-    local rule=$1
+    local type=$1      # e.g., "address", "phone", "email"
     local temp_file=$2
     
-    local table=$(echo "$rule" | yq e '.table' -)
-    local field=$(echo "$rule" | yq e '.field' -)
-    local value=$(echo "$rule" | yq e '.value' -)
+    log "INFO" "Processing $type standardization rules..." "$LOG_FILE"
     
-    log "INFO" "Standardizing $field in table $table" "$LOG_FILE"
+    # Get the standardized value for this type
+    local std_value
+    std_value=$(yq e ".scrubbing.standardize.$type.value" "$CONFIG_FILE")
     
-    local value_escaped=$(escape_for_sed "$value")
-    if ! sed -i "s|'[^']*'|'$value_escaped'|g" "$temp_file"; then
-        log "ERROR" "Failed to update standardized value for table $table, field $field" "$LOG_FILE"
-        return 1
-    fi
+    # Get fields configuration
+    local fields_config
+    fields_config=$(yq e -o=json ".scrubbing.standardize.$type.fields" "$CONFIG_FILE")
+    
+    # Process each field configuration
+    echo "$fields_config" | jq -c '.[]' | while read -r field_entry; do
+        local table
+        local field
+        
+        # Extract table and field using jq
+        table=$(echo "$field_entry" | jq -r '.table')
+        field=$(echo "$field_entry" | jq -r '.field')
+        
+        if [ "$table" != "null" ] && [ "$field" != "null" ]; then
+            log "INFO" "Standardizing $field in table $table to value: $std_value" "$LOG_FILE"
+            
+            # Create a pattern that matches the specific field in the specific table
+            local pattern="INSERT INTO $table.*'[^']*'.*$field"
+            local value_escaped=$(escape_for_sed "$std_value")
+            
+            if ! sed -i "/$pattern/s|'[^']*'|'$value_escaped'|g" "$temp_file"; then
+                log "ERROR" "Failed to update standardized value for table $table, field $field" "$LOG_FILE"
+                return 1
+            fi
+        else
+            log "WARNING" "Skipping invalid configuration: table=$table, field=$field" "$LOG_FILE"
+        fi
+    done
     
     return 0
 }
@@ -179,12 +202,14 @@ done < <(yq e '.scrubbing.random_names[].table' "$CONFIG_FILE")
 
 # Process standardization rules
 log "INFO" "Processing standardization rules..." "$LOG_FILE"
-while IFS= read -r rule; do
-    if ! process_standardization "$rule" "$TEMP_FILE"; then
-        rm -f "$TEMP_FILE"
-        exit 1
+for type in "address" "phone" "email"; do
+    if [ -n "$(yq e ".scrubbing.standardize.$type" "$CONFIG_FILE")" ]; then
+        if ! process_standardization "$type" "$TEMP_FILE"; then
+            rm -f "$TEMP_FILE"
+            exit 1
+        fi
     fi
-done < <(yq e '.scrubbing.standardize.*.fields[]' "$CONFIG_FILE")
+done
 
 # Move processed file to output with error checking
 if ! mv "$TEMP_FILE" "$OUTPUT_FILE"; then

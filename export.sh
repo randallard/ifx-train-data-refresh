@@ -4,6 +4,13 @@
 set -e
 set -o pipefail
 
+# Check for jq dependency
+if ! command -v jq &> /dev/null; then
+    echo "Error: jq is required but not installed"
+    echo "On RHEL systems, install it with: sudo yum install jq"
+    exit 1
+fi
+
 # Get script directory for relative paths 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 echo "DEBUG[1]: SCRIPT_DIR=$SCRIPT_DIR"
