@@ -8,6 +8,57 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" | tee -a "$log_file"
 }
 
+# Helper function to get table names from config
+get_excluded_tables() {
+    yq e '.excluded_tables[]' "$CONFIG_FILE"
+}
+
+# Helper function to get field mapping for a table
+get_table_field_mapping() {
+    local table=$1
+    
+    # For known tables, return their specific value columns
+    case "$table" in
+        "training_config")
+            echo "config_value"
+            return 0
+            ;;
+        "train_specific_data")
+            echo "data_value"
+            return 0
+            ;;
+    esac
+    
+    # First check random_names section
+    local field=$(yq e ".scrubbing.random_names[] | select(.table == \"$table\") | .fields[0]" "$CONFIG_FILE")
+    
+    # If not found, check standardize section
+    if [ -z "$field" ]; then
+        for type in "address" "phone" "email"; do
+            field=$(yq e ".scrubbing.standardize.$type.fields[] | select(.table == \"$table\") | .field" "$CONFIG_FILE")
+            if [ -n "$field" ]; then
+                break
+            fi
+        done
+    fi
+    
+    # If still not found, check combination_fields
+    if [ -z "$field" ]; then
+        field=$(yq e ".scrubbing.combination_fields[] | select(.table == \"$table\") | .target_field" "$CONFIG_FILE")
+    fi
+    
+    echo "$field"
+}
+
+# Helper function to clean SQL output
+clean_sql_output() {
+    local input=$1
+    echo "$input" | grep -v "^$" | grep -v "Database" | grep -v "row" | grep -v "^[[:space:]]*$" | 
+    sed -n '/^[[:space:]]*[^[:space:]]/p' | # Only lines that start with optional spaces followed by non-space
+    sed 's/^[[:space:]]*[^[:space:]]*[[:space:]]*//g' | # Remove column name and spaces
+    sed 's/^[[:space:]]*//;s/[[:space:]]*$//' # Trim leading/trailing spaces
+}
+
 # Helper function to run SQL and get results
 run_sql() {
     local db=$1
@@ -29,37 +80,34 @@ get_first_string_column() {
     local db=$1
     local table=$2
     
-    case "$table" in
-        "training_config")
-            echo "config_value"
-            return 0
-            ;;
-        "train_specific_data")
-            echo "data_value"
-            return 0
-            ;;
-        *)
-            local result
-            result=$(run_sql "$db" "SELECT TRIM(c.colname) as colname
-            FROM syscolumns c, systables t
-            WHERE c.tabid = t.tabid 
-            AND t.tabname = '${table}'
-            AND t.tabtype = 'T'
-            AND c.coltype IN (0, 13)
-            AND c.collength > 0
-            ORDER BY c.colno
-            FETCH FIRST 1 ROW ONLY;")
-            
-            local column
-            column=$(echo "$result" | grep -v "^$" | grep -v "colname" | grep -v "Database" | tr -d ' ')
-            
-            if [ -z "$column" ]; then
-                return 1
-            fi
-            echo "$column"
-            return 0
-            ;;
-    esac
+    # First try to get the mapped field from config
+    local mapped_field
+    mapped_field=$(get_table_field_mapping "$table")
+    
+    if [ -n "$mapped_field" ]; then
+        echo "$mapped_field"
+        return 0
+    fi
+    
+    # If no mapping found, fall back to first VARCHAR column
+    local result
+    result=$(run_sql "$db" "
+        SELECT FIRST 1 TRIM(c.colname) as colname
+        FROM syscolumns c
+        JOIN systables t ON c.tabid = t.tabid 
+        WHERE t.tabname = '${table}'
+        AND t.tabtype = 'T'
+        AND c.coltype = 13
+        ORDER BY c.colno;")
+    
+    local column
+    column=$(echo "$result" | clean_sql_output)
+    
+    if [ -z "$column" ]; then
+        return 1
+    fi
+    echo "$column"
+    return 0
 }
 
 # Mark table data and store original values
@@ -83,16 +131,15 @@ mark_table_data() {
     log "INFO" "Using column '$column' for marking in table '$table'" "$LOG_FILE"
     
     # First, backup the values we're going to modify
-    local backup_query="SELECT FIRST ${sample_count} TRIM($column) as value 
-    FROM $table 
-    WHERE $column IS NOT NULL 
-    ORDER BY id;"
+    local backup_query="SELECT FIRST ${sample_count} $column FROM $table 
+        WHERE $column IS NOT NULL 
+        ORDER BY id;"
     
     log "DEBUG" "Running backup query:" "$LOG_FILE"
     log "DEBUG" "$backup_query" "$LOG_FILE"
     
     # Save original values for verification
-    run_sql "$db" "$backup_query" | grep -v "^$" | grep -v "Database" | grep -v "value" | grep -v "row" > "$backup_file"
+    run_sql "$db" "$backup_query" | clean_sql_output > "$backup_file"
     
     # Show backup contents
     log "DEBUG" "Backup file contents:" "$LOG_FILE"
@@ -100,28 +147,22 @@ mark_table_data() {
     
     # Update the values
     local update_query="UPDATE $table 
-    SET $column = '${marker}' || TRIM($column)
-    WHERE $column IS NOT NULL;"
+        SET $column = '${marker}' || $column
+        WHERE $column IS NOT NULL;"
     
     log "DEBUG" "Running update query:" "$LOG_FILE"
     log "DEBUG" "$update_query" "$LOG_FILE"
     
-    local update_result
-    update_result=$(run_sql "$db" "$update_query")
-    log "DEBUG" "Update result: $update_result" "$LOG_FILE"
+    run_sql "$db" "$update_query"
     
     # Verify the update
     local check_query="SELECT COUNT(*) as count FROM $table WHERE $column LIKE '${marker}%';"
-    local marked_count_result
-    marked_count_result=$(run_sql "$db" "$check_query")
-    log "DEBUG" "Count query result: $marked_count_result" "$LOG_FILE"
-    
     local marked_count
-    marked_count=$(echo "$marked_count_result" | grep -v "^$" | grep -v "count" | grep -v "Database" | grep -v "row" | tr -d ' ')
+    marked_count=$(run_sql "$db" "$check_query" | clean_sql_output)
     
     if [[ ! "$marked_count" =~ ^[0-9]+$ ]]; then
-        log "ERROR" "Failed to get valid count: $marked_count" "$LOG_FILE"
-        marked_count=0
+        log "ERROR" "Failed to get valid count after update" "$LOG_FILE"
+        return 1
     fi
     
     log "INFO" "Marked $marked_count records in $table" "$LOG_FILE"
@@ -159,9 +200,9 @@ verify_marked_records() {
     log "INFO" "Verifying marks in column '$column' for table '$table'" "$LOG_FILE"
     
     # Check marked records exist
+    local check_query="SELECT COUNT(*) FROM $table WHERE $column LIKE '${marker}%';"
     local marked_count
-    marked_count=$(run_sql "$db" "SELECT COUNT(*) as count FROM $table WHERE $column LIKE '${marker}%';" | 
-                  grep -v "^$" | grep -v "count" | grep -v "Database" | grep -v "row" | tr -d ' ')
+    marked_count=$(run_sql "$db" "$check_query" | clean_sql_output)
     
     if [ -z "$marked_count" ] || [ "$marked_count" -lt "$expected_count" ]; then
         log "ERROR" "Expected $expected_count marked records, found ${marked_count:-0}" "$LOG_FILE"
@@ -173,17 +214,17 @@ verify_marked_records() {
     while IFS= read -r original_value || [ -n "$original_value" ]; do
         [ -z "$original_value" ] && continue
         
-        # Clean the value and check if it exists in the table
-        original_value=$(echo "$original_value" | tr -d '\r' | tr -d '\n' | xargs)
+        # Clean the value
+        original_value=$(echo "$original_value" | clean_sql_output)
         local marked_value="${marker}${original_value}"
         
-        local verify_query="SELECT COUNT(*) FROM $table WHERE TRIM($column) = '${marked_value}';"
+        local verify_query="SELECT COUNT(*) FROM $table WHERE $column = '${marked_value}';"
         local found
-        found=$(run_sql "$db" "$verify_query" | grep -v "^$" | grep -v "count" | grep -v "Database" | grep -v "row" | tr -d ' ')
+        found=$(run_sql "$db" "$verify_query" | clean_sql_output)
         
         if [ "${found:-0}" -lt 1 ]; then
             ((mismatch_count++))
-            log "ERROR" "Value not found: Expected '$marked_value'" "$LOG_FILE"
+            log "ERROR" "Value not found: '$marked_value'" "$LOG_FILE"
         fi
     done < "$backup_file"
     
@@ -196,7 +237,26 @@ verify_marked_records() {
     return 0
 }
 
-# Run all verifications (same as before)
+# Function to check if table exists
+check_table_exists() {
+    local db=$1
+    local table=$2
+    local exists=$(run_sql "$db" "SELECT tabname FROM systables WHERE tabname='$table';" | clean_sql_output)
+    [ -n "$exists" ]
+    return $?
+}
+
+# Test database connection
+test_db_connection() {
+    local db_name=$1
+    if ! echo "database $db_name; SELECT FIRST 1 * FROM systables;" | dbaccess - >/dev/null 2>&1; then
+        log "ERROR" "Cannot connect to database: $db_name" "$LOG_FILE"
+        return 1
+    fi
+    return 0
+}
+
+# Run all verifications
 run_all_verifications() {
     local db=$1
     local status=0
@@ -218,7 +278,7 @@ run_all_verifications() {
             log "ERROR" "Failed to verify marked records in table: $table" "$LOG_FILE"
             status=1
         fi
-    done < <(yq e '.excluded_tables[]' "$CONFIG_FILE")
+    done < <(get_excluded_tables)
     
     # Verify essential records
     while IFS= read -r id; do
@@ -301,25 +361,5 @@ get_table_columns() {
     ORDER BY c.colno;" | dbaccess - | grep -v "colname" | grep -v "^$" | tr -d ' ')
     
     echo "$result"
-}
-
-# Test database connection
-test_db_connection() {
-    local db_name=$1
-    if ! echo "database $db_name; SELECT FIRST 1 * FROM systables;" | dbaccess - >/dev/null 2>&1; then
-        log "ERROR" "Cannot connect to database: $db_name" "$LOG_FILE"
-        return 1
-    fi
-    return 0
-}
-
-# Function to check if table exists
-check_table_exists() {
-    local db=$1
-    local table=$2
-    local exists=$(echo "database $db; SELECT tabname FROM systables WHERE tabname='$table';" | \
-                  dbaccess - 2>/dev/null | grep -v "tabname" | grep -v "^$" | grep "$table")
-    [ -n "$exists" ]
-    return $?
 }
 
