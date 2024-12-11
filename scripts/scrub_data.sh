@@ -36,19 +36,21 @@ fi
 ADJECTIVES=($(cat "adjectives.txt"))
 NOUNS=($(cat "nouns.txt"))
 
+# Set the random seed once at the start
+RANDOM_SEED=$(yq e '.export.random_seed' "$CONFIG_FILE")
+RANDOM=$RANDOM_SEED
+log "INFO" "Initialized random seed to: $RANDOM_SEED" "$LOG_FILE"
+
 # Helper function to escape special characters for sed
 escape_for_sed() {
     echo "$1" | sed 's/[&/\]/\\&/g'
 }
 
-# Generate random name based on style using verified random number generation
+# Generate random name based on style
 generate_name() {
     local style=${1:-github}
     case $style in
         github)
-            local seed=$(yq e '.export.random_seed' "$CONFIG_FILE")
-            RANDOM=$seed
-            
             local adj=${ADJECTIVES[$RANDOM % ${#ADJECTIVES[@]}]}
             local noun=${NOUNS[$RANDOM % ${#NOUNS[@]}]}
             echo "${adj}-${noun}"
