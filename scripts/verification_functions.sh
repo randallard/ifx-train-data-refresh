@@ -273,6 +273,70 @@ test_db_connection() {
     return 0
 }
 
+# Function to verify dependent records for essential records
+verify_dependent_records() {
+    local db=$1
+    local primary_id=$2
+    local status=0
+    
+    # Get dependency configuration
+    local primary_table=$(yq e '.tables.primary_table.name' "$CONFIG_FILE")
+    local foreign_key=$(yq e '.tables.dependencies.foreign_key_column' "$CONFIG_FILE")
+    
+    # Get all tables that might have dependencies
+    local dependent_tables
+    dependent_tables=$(run_sql "$db" "
+        SELECT DISTINCT t.tabname 
+        FROM syscolumns c
+        JOIN systables t ON c.tabid = t.tabid 
+        WHERE t.tabtype = 'T'
+        AND c.colname = '${foreign_key}'
+        AND t.tabname != '${primary_table}';" | clean_sql_output)
+    
+    if [ -z "$dependent_tables" ]; then
+        log "WARNING" "No dependent tables found with foreign key: ${foreign_key}" "$LOG_FILE"
+        return 0
+    fi
+    
+    log "INFO" "Checking dependencies for record ${primary_id} in tables: ${dependent_tables}" "$LOG_FILE"
+    
+    # Check each table for dependent records
+    echo "$dependent_tables" | while read -r table; do
+        local count
+        count=$(get_simple_count "$db" "
+            SELECT COUNT(*) 
+            FROM $table 
+            WHERE $foreign_key = $primary_id;")
+        
+        if [ "${count:-0}" -eq 0 ]; then
+            log "WARNING" "No dependent records found in $table for ${primary_id}" "$LOG_FILE"
+            status=1
+        else
+            log "INFO" "Found ${count} dependent record(s) in $table for ${primary_id}" "$LOG_FILE"
+        fi
+    done
+    
+    return $status
+}
+
+# Add this to the run_all_verifications function
+verify_essential_dependencies() {
+    local db=$1
+    local status=0
+    
+    log "INFO" "Verifying dependencies for essential records..." "$LOG_FILE"
+    
+    # Check each essential record's dependencies
+    while IFS= read -r id; do
+        if ! verify_dependent_records "$db" "$id"; then
+            log "ERROR" "Missing dependencies for essential record ${id}" "$LOG_FILE"
+            status=1
+        fi
+    done < <(yq e '.essential_records.records[].id' "$CONFIG_FILE")
+    
+    return $status
+}
+
 # Run all verifications
 run_all_verifications() {
     local db=$1
@@ -312,6 +376,12 @@ run_all_verifications() {
         fi
     done < <(yq e '.essential_records.records[].id' "$CONFIG_FILE")
     
+    # After verifying essential records
+    if ! verify_essential_dependencies "$db"; then
+        log "ERROR" "Essential record dependency verification failed" "$LOG_FILE"
+        status=1
+    fi
+
     return $status
 }
 

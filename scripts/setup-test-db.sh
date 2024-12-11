@@ -38,11 +38,15 @@ check_dependencies() {
 # Check and install dependencies
 check_dependencies
 
-echo "DATABASE sysmaster;
-DROP DATABASE IF EXISTS test_live;
-CREATE DATABASE test_live;" | dbaccess - 2>/dev/null
-
 dbaccess test_live << 'EOF'
+-- Drop and recreate the database
+DATABASE sysmaster;
+DROP DATABASE IF EXISTS test_live;
+CREATE DATABASE test_live;
+
+DATABASE test_live;
+
+-- Create tables with relationships
 CREATE TABLE customers (
     id SERIAL,
     first_name VARCHAR(50),
@@ -54,6 +58,7 @@ CREATE TABLE customers (
 
 CREATE TABLE employees (
     id SERIAL,
+    customer_id INTEGER,  -- Foreign key to customers
     name VARCHAR(100),
     email VARCHAR(100),
     address VARCHAR(200),
@@ -62,6 +67,7 @@ CREATE TABLE employees (
 
 CREATE TABLE projects (
     id SERIAL,
+    customer_id INTEGER,  -- Foreign key to customers
     project_name VARCHAR(100),
     name1 VARCHAR(50),
     name2 VARCHAR(50),
@@ -70,6 +76,7 @@ CREATE TABLE projects (
 
 CREATE TABLE repositories (
     id SERIAL,
+    project_id INTEGER,  -- Foreign key to projects
     owner_name VARCHAR(50),
     repo_name VARCHAR(50),
     full_path VARCHAR(150)
@@ -93,14 +100,38 @@ INSERT INTO customers (id, first_name, last_name, email, address, phone)
 INSERT INTO customers (id, first_name, last_name, email, address, phone)
     VALUES (1002, 'Essential2', 'User2', 'essential2@example.com', '456 Essential St', '555-1002');
 
--- Create a temporary sequence table
+-- Create related records for essential customers
+-- Employees for essential customers
+INSERT INTO employees (customer_id, name, email, address, phone)
+    VALUES (1001, 'EssentialEmp1', 'emp1@essential.com', '789 Work St', '555-2001');
+INSERT INTO employees (customer_id, name, email, address, phone)
+    VALUES (1001, 'EssentialEmp2', 'emp2@essential.com', '790 Work St', '555-2002');
+INSERT INTO employees (customer_id, name, email, address, phone)
+    VALUES (1002, 'EssentialEmp3', 'emp3@essential.com', '791 Work St', '555-2003');
+
+-- Projects for essential customers
+INSERT INTO projects (customer_id, project_name, name1, name2)
+    VALUES (1001, 'EssentialProj1', 'Essential', 'Project1');
+INSERT INTO projects (customer_id, project_name, name1, name2)
+    VALUES (1001, 'EssentialProj2', 'Essential', 'Project2');
+INSERT INTO projects (customer_id, project_name, name1, name2)
+    VALUES (1002, 'EssentialProj3', 'Essential', 'Project3');
+
+-- Repositories for essential projects
+INSERT INTO repositories (project_id, owner_name, repo_name)
+    SELECT id, 'Essential', 'Repo' || CAST(id AS VARCHAR(10))
+    FROM projects 
+    WHERE customer_id IN (1001, 1002);
+
+-- Create a temporary sequence table for generating test data
 CREATE TEMP TABLE sequence_table (id SERIAL);
 
 -- Insert 100 rows to generate sequence
 INSERT INTO sequence_table (id) 
 SELECT 0 FROM sysmaster:'informix'.systables WHERE tabid < 100;
 
--- Insert 100 regular test customers
+-- Insert regular test records
+-- 100 regular test customers
 INSERT INTO customers (first_name, last_name, email, address, phone)
     SELECT 
         'TestFirst' || CAST(id AS VARCHAR(10)),
@@ -110,31 +141,59 @@ INSERT INTO customers (first_name, last_name, email, address, phone)
         '555-' || LPAD(CAST(id AS VARCHAR(10)), 4, '0')
     FROM sequence_table WHERE id <= 100;
 
--- Insert 50 test employees
-INSERT INTO employees (name, email, address, phone)
+-- 50 test employees with random customer assignments
+INSERT INTO employees (customer_id, name, email, address, phone)
     SELECT 
+        1002 + MOD(id, 100), -- Assign to random customers after essential ones
         'Employee' || CAST(id AS VARCHAR(10)),
         'emp' || CAST(id AS VARCHAR(10)) || '@example.com',
         CAST(id AS VARCHAR(10)) || ' Work Avenue',
         '555-' || LPAD(CAST(id AS VARCHAR(10)), 4, '0')
     FROM sequence_table WHERE id <= 50;
 
--- Insert 200 test projects
-INSERT INTO projects (project_name, name1, name2)
+-- 200 test projects with customer assignments
+INSERT INTO projects (customer_id, project_name, name1, name2)
     SELECT 
+        1002 + MOD(id, 100), -- Assign to random customers after essential ones
         'Project' || CAST(id AS VARCHAR(10)),
         'FirstName' || CAST(id AS VARCHAR(10)),
         'LastName' || CAST(id AS VARCHAR(10))
     FROM sequence_table WHERE id <= 200;
 
--- Insert 300 test repositories
-INSERT INTO repositories (owner_name, repo_name)
-    SELECT 
-        'Owner' || CAST(id AS VARCHAR(10)),
-        'Repo' || CAST(id AS VARCHAR(10))
-    FROM sequence_table WHERE id <= 300;
+-- First verify our project range
+SELECT MIN(id), MAX(id), COUNT(*) FROM projects;
 
--- Insert training config records one by one for Informix compatibility
+-- Create sequence for repositories
+CREATE TEMP TABLE repo_sequence (
+    id SERIAL,
+    project_id INTEGER
+);
+
+-- Generate sequence numbers up to desired repo count
+INSERT INTO repo_sequence (id) 
+SELECT 0 FROM sysmaster:'informix'.systables WHERE tabid < 100;
+
+-- Update project_ids to cycle through available projects
+UPDATE repo_sequence 
+SET project_id = (SELECT MIN(id) FROM projects) + MOD((id - 1), 
+    (SELECT COUNT(*) FROM projects));
+
+-- Simple insert from sequence
+INSERT INTO repositories (project_id, owner_name, repo_name)
+SELECT 
+    project_id,
+    'Owner' || id,
+    'Repo' || id
+FROM repo_sequence 
+WHERE id <= 300;
+
+-- Clean up
+DROP TABLE repo_sequence;
+
+-- Verify counts
+SELECT COUNT(*) FROM repositories;
+
+-- Training config - single insert per record for simplicity
 INSERT INTO training_config (config_key, config_value) VALUES ('database_mode', 'training');
 INSERT INTO training_config (config_key, config_value) VALUES ('log_level', 'debug');
 INSERT INTO training_config (config_key, config_value) VALUES ('cache_enabled', 'true');
@@ -146,7 +205,7 @@ INSERT INTO training_config (config_key, config_value) VALUES ('environment', 't
 INSERT INTO training_config (config_key, config_value) VALUES ('region', 'us-east');
 INSERT INTO training_config (config_key, config_value) VALUES ('cluster_size', 'medium');
 
--- Insert train specific data records one by one
+-- Train specific data - single insert per record
 INSERT INTO train_specific_data (data_key, data_value) VALUES ('model_type', 'classification');
 INSERT INTO train_specific_data (data_key, data_value) VALUES ('dataset_version', '2023.1');
 INSERT INTO train_specific_data (data_key, data_value) VALUES ('feature_set', 'extended');
