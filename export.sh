@@ -1,89 +1,70 @@
 #!/bin/bash
 
+# Enable error tracing
 set -e
+set -o pipefail
 
-CONFIG_FILE="config.yml"
-EXPORT_FILE="db_export.sql"
-SCRUBBED_FILE="db_export_scrubbed.sql"
+# Get script directory for relative paths 
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+echo "DEBUG[1]: SCRIPT_DIR=$SCRIPT_DIR"
 
+# Set up work directory
 WORK_DIR="$HOME/work"
 mkdir -p "$WORK_DIR"
-chmod 755 "$WORK_DIR" 
 
-# Export database schema
-dbschema -d ${databases_source_name} -ss > "$WORK_DIR/schema.sql" || {
-    echo "Failed to export schema"
+# Configuration and logging setup
+CONFIG_FILE="$SCRIPT_DIR/config.yml"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+LOG_DIR="$HOME/logs"
+mkdir -p "$LOG_DIR"
+
+# Source verification functions
+source "$SCRIPT_DIR/scripts/verification_functions.sh"
+
+# Load configuration
+LOG_PREFIX="export_"
+LOG_FILE="${LOG_DIR}/${LOG_PREFIX}${TIMESTAMP}.log"
+SOURCE_DB=$(yq e '.databases.source.name' "$CONFIG_FILE")
+TARGET_DB=$(yq e '.databases.target.name' "$CONFIG_FILE")
+
+# Start export process
+log "INFO" "Starting export process" "$LOG_FILE"
+log "INFO" "Source database: $SOURCE_DB" "$LOG_FILE"
+log "INFO" "Target database: $TARGET_DB" "$LOG_FILE"
+
+# Test database connections
+log "INFO" "Testing database connections" "$LOG_FILE"
+test_db_connection "$SOURCE_DB" || {
+    log "ERROR" "Cannot connect to source database: $SOURCE_DB" "$LOG_FILE"
     exit 1
 }
 
-# Export essential records and their dependencies
-echo "Exporting essential records..."
+# Create work directory for export
+cd "$WORK_DIR"
+rm -rf "${SOURCE_DB}.exp"
 
-# Load configuration
-source ./scripts/yaml_parser.sh
-parse_yaml "$CONFIG_FILE"
+# Export the database
+log "INFO" "Exporting source data..." "$LOG_FILE"
+dbexport -d "$SOURCE_DB" > "$WORK_DIR/dbexport.log" 2>&1 || {
+    log "ERROR" "Failed to export data" "$LOG_FILE"
+    cat "$WORK_DIR/dbexport.log"
+    exit 1
+}
 
-# Get table configuration
-PRIMARY_TABLE=$(yq e '.tables.primary_table.name' "$CONFIG_FILE")
-PRIMARY_KEY=$(yq e '.tables.primary_table.primary_key' "$CONFIG_FILE")
-FOREIGN_KEY=$(yq e '.tables.dependencies.foreign_key_column' "$CONFIG_FILE")
-DEPENDENT_PRIMARY_KEY=$(yq e '.tables.dependencies.primary_key' "$CONFIG_FILE")
+# Move to export directory
+cd "$HOME/work/${SOURCE_DB}.exp"
 
-# Set random seed for consistent sampling
-RANDOM=$(yq e '.export.random_seed' "$CONFIG_FILE")
+# Apply data scrubbing if scrub_data.sh exists
+if [ -f "$SCRIPT_DIR/scripts/scrub_data.sh" ]; then
+    log "INFO" "Applying data scrubbing..." "$LOG_FILE"
+    "$SCRIPT_DIR/scripts/scrub_data.sh" "${SOURCE_DB}.sql" "${SOURCE_DB}_scrubbed.sql" || {
+        log "ERROR" "Data scrubbing failed" "$LOG_FILE"
+        exit 1
+    }
+else
+    log "WARNING" "scrub_data.sh not found - skipping data scrubbing" "$LOG_FILE"
+    cp "${SOURCE_DB}.sql" "${SOURCE_DB}_scrubbed.sql"
+fi
 
-# Export database schema
-dbschema -d ${databases_source_name} -o schema.sql
-
-# Export essential records and their dependencies
-echo "Exporting essential records..."
-for id in $(yq e '.essential_records.records[].id' "$CONFIG_FILE"); do
-    dbexport -d ${databases_source_name} \
-             -o essential_$id.sql \
-             -t "SELECT * FROM $PRIMARY_TABLE WHERE $PRIMARY_KEY = $id"
-    
-    if [[ $(yq e '.essential_records.include_dependencies' "$CONFIG_FILE") == "true" ]]; then
-        for table in $(dbschema -d ${databases_source_name} -t $PRIMARY_TABLE -r); do
-            dbexport -d ${databases_source_name} \
-                     -a essential_$id.sql \
-                     -t "SELECT DISTINCT $table.* FROM $table 
-                         JOIN $PRIMARY_TABLE ON $PRIMARY_TABLE.$PRIMARY_KEY = $table.$FOREIGN_KEY 
-                         WHERE $PRIMARY_TABLE.$PRIMARY_KEY = $id"
-        done
-    fi
-done
-
-# Export sampled data
-sample_percentage=$(yq e '.export.sample_percentage' "$CONFIG_FILE")
-batch_size=$(yq e '.export.batch_size' "$CONFIG_FILE")
-
-echo "Exporting ${sample_percentage}% of non-essential records..."
-for table in $(dbschema -d ${databases_source_name} -t); do
-    # Skip excluded tables
-    if echo "$table" | grep -qf <(yq e '.excluded_tables[]' "$CONFIG_FILE"); then
-        continue
-    fi
-    
-    # Get total count
-    total_rows=$(echo "SELECT COUNT(*) FROM $table" | dbaccess ${databases_source_name} - | tail -n 1)
-    sample_size=$(( total_rows * sample_percentage / 100 ))
-    
-    # Export in batches
-    offset=0
-    while [ $offset -lt $sample_size ]; do
-        current_batch=$(( batch_size < (sample_size - offset) ? batch_size : (sample_size - offset) ))
-        dbexport -d ${databases_source_name} \
-                 -a sample_$table.sql \
-                 -t "SELECT FIRST $current_batch SKIP $offset * FROM $table 
-                     WHERE $DEPENDENT_PRIMARY_KEY NOT IN (SELECT $PRIMARY_KEY FROM essential_records)"
-        offset=$(( offset + current_batch ))
-    done
-done
-
-# Combine exports
-cat schema.sql essential_*.sql sample_*.sql > "$EXPORT_FILE"
-
-# Apply data scrubbing
-./scripts/scrub_data.sh "$EXPORT_FILE" "$SCRUBBED_FILE"
-
-echo "Export and scrubbing complete. Output: $SCRUBBED_FILE"
+log "INFO" "Export process completed successfully" "$LOG_FILE"
+echo "Export completed. Output file: ${WORK_DIR}/${SOURCE_DB}.exp/${SOURCE_DB}_scrubbed.sql"
