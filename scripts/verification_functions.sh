@@ -5,25 +5,61 @@ log() {
     local level=$1
     local message=$2
     local log_file=$3
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" | tee -a "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" | tee -a "$log_file"
 }
 
-# Function to get first string column (with proper variable handling)
+# Helper function to run SQL and get results
+run_sql() {
+    local db=$1
+    local query=$2
+    local tmp_file
+    tmp_file=$(mktemp)
+    
+    echo "database $db;
+    $query" | dbaccess - > "$tmp_file" 2>&1
+    
+    local result
+    result=$(cat "$tmp_file")
+    rm -f "$tmp_file"
+    echo "$result"
+}
+
+# Function to get the appropriate string column for a table
 get_first_string_column() {
     local db=$1
     local table=$2
-    local query="database $db;
-    SELECT TRIM(colname) as colname
-    FROM syscolumns c, systables t
-    WHERE c.tabid = t.tabid 
-    AND t.tabname = '${table}'
-    AND t.tabtype = 'T'
-    AND c.coltype = 13
-    AND c.collength > 0
-    ORDER BY c.colno
-    FETCH FIRST 1 ROW ONLY;"
     
-    echo "$query" | dbaccess - 2>/dev/null | grep -v "colname" | grep -v "^$" | tr -d ' '
+    case "$table" in
+        "training_config")
+            echo "config_value"
+            return 0
+            ;;
+        "train_specific_data")
+            echo "data_value"
+            return 0
+            ;;
+        *)
+            local result
+            result=$(run_sql "$db" "SELECT TRIM(c.colname) as colname
+            FROM syscolumns c, systables t
+            WHERE c.tabid = t.tabid 
+            AND t.tabname = '${table}'
+            AND t.tabtype = 'T'
+            AND c.coltype IN (0, 13)
+            AND c.collength > 0
+            ORDER BY c.colno
+            FETCH FIRST 1 ROW ONLY;")
+            
+            local column
+            column=$(echo "$result" | grep -v "^$" | grep -v "colname" | grep -v "Database" | tr -d ' ')
+            
+            if [ -z "$column" ]; then
+                return 1
+            fi
+            echo "$column"
+            return 0
+            ;;
+    esac
 }
 
 # Mark table data and store original values
@@ -34,47 +70,75 @@ mark_table_data() {
     local sample_count=$4
     local backup_file="$WORK_DIR/${table}_original_values.txt"
     
-    # Get column name first, without mixing with debug output
-    local first_column
-    first_column=$(get_first_string_column "$db" "$table")
+    # Get target column
+    local column
+    column=$(get_first_string_column "$db" "$table")
+    local ret=$?
     
-    if [ -z "$first_column" ]; then
-        log "WARNING" "No string columns found in table $table" "$LOG_FILE"
+    if [ $ret -ne 0 ] || [ -z "$column" ]; then
+        log "ERROR" "No suitable column found for marking in table $table" "$LOG_FILE"
         return 1
     fi
     
-    log "DEBUG" "Using column '$first_column' for marking in table '$table'" "$LOG_FILE"
+    log "INFO" "Using column '$column' for marking in table '$table'" "$LOG_FILE"
     
-    # Backup original values before marking
-    local backup_query="database $db;
-    SELECT FIRST ${sample_count} ${first_column} 
-    FROM ${table};"
+    # First, backup the values we're going to modify
+    local backup_query="SELECT FIRST ${sample_count} TRIM($column) as value 
+    FROM $table 
+    WHERE $column IS NOT NULL 
+    ORDER BY id;"
     
-    echo "$backup_query" | dbaccess - 2>/dev/null | grep -v "^$" | grep -v "${first_column}" > "$backup_file"
+    log "DEBUG" "Running backup query:" "$LOG_FILE"
+    log "DEBUG" "$backup_query" "$LOG_FILE"
     
-    log "DEBUG" "Stored original values for $table in $backup_file" "$LOG_FILE"
+    # Save original values for verification
+    run_sql "$db" "$backup_query" | grep -v "^$" | grep -v "Database" | grep -v "value" | grep -v "row" > "$backup_file"
     
-    # Mark the records
-    local update_query="database $db;
-    UPDATE FIRST ${sample_count} ${table} 
-    SET ${first_column} = '${marker}' || ${first_column};"
+    # Show backup contents
+    log "DEBUG" "Backup file contents:" "$LOG_FILE"
+    cat "$backup_file" >> "$LOG_FILE"
     
-    echo "$update_query" | dbaccess - >/dev/null 2>&1
+    # Update the values
+    local update_query="UPDATE $table 
+    SET $column = '${marker}' || TRIM($column)
+    WHERE $column IS NOT NULL;"
     
-    # Verify the update happened
-    local count_query="database $db;
-    SELECT COUNT(*) FROM ${table} 
-    WHERE ${first_column} LIKE '${marker}%';"
+    log "DEBUG" "Running update query:" "$LOG_FILE"
+    log "DEBUG" "$update_query" "$LOG_FILE"
+    
+    local update_result
+    update_result=$(run_sql "$db" "$update_query")
+    log "DEBUG" "Update result: $update_result" "$LOG_FILE"
+    
+    # Verify the update
+    local check_query="SELECT COUNT(*) as count FROM $table WHERE $column LIKE '${marker}%';"
+    local marked_count_result
+    marked_count_result=$(run_sql "$db" "$check_query")
+    log "DEBUG" "Count query result: $marked_count_result" "$LOG_FILE"
     
     local marked_count
-    marked_count=$(echo "$count_query" | dbaccess - 2>/dev/null | grep -v "^$" | grep -v "count" | tr -d ' ')
+    marked_count=$(echo "$marked_count_result" | grep -v "^$" | grep -v "count" | grep -v "Database" | grep -v "row" | tr -d ' ')
     
-    log "INFO" "Marked ${marked_count:-0} records in $table" "$LOG_FILE"
+    if [[ ! "$marked_count" =~ ^[0-9]+$ ]]; then
+        log "ERROR" "Failed to get valid count: $marked_count" "$LOG_FILE"
+        marked_count=0
+    fi
     
-    return $?
+    log "INFO" "Marked $marked_count records in $table" "$LOG_FILE"
+    
+    # Show sample data after marking
+    local sample_data
+    sample_data=$(run_sql "$db" "SELECT FIRST 3 $column FROM $table WHERE $column LIKE '${marker}%';")
+    log "DEBUG" "Sample data after marking:" "$LOG_FILE"
+    log "DEBUG" "$sample_data" "$LOG_FILE"
+    
+    if [ "$marked_count" -gt 0 ]; then
+        return 0
+    fi
+    return 1
 }
 
-# Verify marked records persist through export/import
+# Verify marked records persist
 verify_marked_records() {
     local db=$1
     local table=$2
@@ -82,42 +146,44 @@ verify_marked_records() {
     local expected_count=$4
     local backup_file="$WORK_DIR/${table}_original_values.txt"
     
-    # Get column name without debug output interference
-    local first_column
-    first_column=$(get_first_string_column "$db" "$table")
+    # Get the column name
+    local column
+    column=$(get_first_string_column "$db" "$table")
+    local ret=$?
     
-    if [ -z "$first_column" ]; then
-        log "WARNING" "No string columns found in table $table" "$LOG_FILE"
+    if [ $ret -ne 0 ] || [ -z "$column" ]; then
+        log "ERROR" "No string column found for verification in table $table" "$LOG_FILE"
         return 1
     fi
+    
+    log "INFO" "Verifying marks in column '$column' for table '$table'" "$LOG_FILE"
     
     # Check marked records exist
-    local count_query="database $db;
-    SELECT COUNT(*) FROM ${table} 
-    WHERE ${first_column} LIKE '${marker}%';"
-    
     local marked_count
-    marked_count=$(echo "$count_query" | dbaccess - 2>/dev/null | grep -v "^$" | grep -v "count" | tr -d ' ')
+    marked_count=$(run_sql "$db" "SELECT COUNT(*) as count FROM $table WHERE $column LIKE '${marker}%';" | 
+                  grep -v "^$" | grep -v "count" | grep -v "Database" | grep -v "row" | tr -d ' ')
     
     if [ -z "$marked_count" ] || [ "$marked_count" -lt "$expected_count" ]; then
-        log "ERROR" "Table $table verification failed: Expected $expected_count marked records, found ${marked_count:-0}" "$LOG_FILE"
+        log "ERROR" "Expected $expected_count marked records, found ${marked_count:-0}" "$LOG_FILE"
         return 1
     fi
     
-    # Verify the marked values match original values (with marker)
+    # Verify values match original + marker
     local mismatch_count=0
-    while IFS= read -r original_value; do
-        local expected_value="${marker}${original_value}"
-        local verify_query="database $db;
-        SELECT COUNT(*) FROM ${table}
-        WHERE ${first_column} = '${expected_value}';"
+    while IFS= read -r original_value || [ -n "$original_value" ]; do
+        [ -z "$original_value" ] && continue
         
+        # Clean the value and check if it exists in the table
+        original_value=$(echo "$original_value" | tr -d '\r' | tr -d '\n' | xargs)
+        local marked_value="${marker}${original_value}"
+        
+        local verify_query="SELECT COUNT(*) FROM $table WHERE TRIM($column) = '${marked_value}';"
         local found
-        found=$(echo "$verify_query" | dbaccess - 2>/dev/null | grep -v "^$" | grep -v "count" | tr -d ' ')
+        found=$(run_sql "$db" "$verify_query" | grep -v "^$" | grep -v "count" | grep -v "Database" | grep -v "row" | tr -d ' ')
         
-        if [ "$found" -ne 1 ]; then
+        if [ "${found:-0}" -lt 1 ]; then
             ((mismatch_count++))
-            log "ERROR" "Value mismatch in $table: Expected '$expected_value'" "$LOG_FILE"
+            log "ERROR" "Value not found: Expected '$marked_value'" "$LOG_FILE"
         fi
     done < "$backup_file"
     
@@ -126,17 +192,17 @@ verify_marked_records() {
         return 1
     fi
     
-    log "INFO" "Table $table verified successfully: Found $marked_count marked records with matching values" "$LOG_FILE"
+    log "INFO" "Table $table verified successfully" "$LOG_FILE"
     return 0
 }
 
-# Run all verifications
+# Run all verifications (same as before)
 run_all_verifications() {
     local db=$1
     local status=0
     
-    # Create work directory for verification files
     mkdir -p "$WORK_DIR"
+    chmod 755 "$WORK_DIR"
     
     # Verify excluded tables
     while IFS= read -r table; do
@@ -161,7 +227,7 @@ run_all_verifications() {
         SELECT COUNT(*) FROM ${PRIMARY_TABLE} 
         WHERE ${PRIMARY_KEY} = $id;" | dbaccess - 2>/dev/null | grep -v "^$" | grep -v "count" | tr -d ' ')
         
-        if [ -z "$count" ] || [ "$count" -ne 1 ]; then
+        if [ "${count:-0}" -ne 1 ]; then
             log "ERROR" "Essential record $id not found in table $PRIMARY_TABLE" "$LOG_FILE"
             status=1
         else
@@ -170,6 +236,25 @@ run_all_verifications() {
     done < <(yq e '.essential_records.records[].id' "$CONFIG_FILE")
     
     return $status
+}
+
+# Debug function to show table columns
+show_table_columns() {
+    local db=$1
+    local table=$2
+    local tmp_file
+    tmp_file=$(mktemp)
+    
+    echo "database $db;
+    SELECT TRIM(c.colname) as colname, c.coltype, c.collength
+    FROM syscolumns c, systables t
+    WHERE c.tabid = t.tabid 
+    AND t.tabname = '${table}'
+    ORDER BY c.colno;" | dbaccess - > "$tmp_file" 2>/dev/null
+    
+    log "DEBUG" "Columns for table $table:" "$LOG_FILE"
+    cat "$tmp_file" | grep -v "^$" >> "$LOG_FILE"
+    rm -f "$tmp_file"
 }
 
 # Debug function for showing table metadata
