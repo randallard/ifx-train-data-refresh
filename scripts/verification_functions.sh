@@ -5,62 +5,25 @@ log() {
     local level=$1
     local message=$2
     local log_file=$3
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" | tee -a "$log_file"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" | tee -a "$LOG_FILE"
 }
 
-# Debug function for showing table metadata
-show_table_info() {
+# Function to get first string column (with proper variable handling)
+get_first_string_column() {
     local db=$1
     local table=$2
-    
-    log "DEBUG" "Getting metadata for table: $table" "$LOG_FILE"
-    
-    # Show table ID
-    echo "database $db;
-    SELECT tabid, tabname, owner 
-    FROM systables 
-    WHERE tabname = '${table}';" | dbaccess - 2>&1 | tee -a "$LOG_FILE"
-    
-    # Show column information
-    echo "database $db;
-    SELECT colno, colname, coltype, collength
-    FROM syscolumns c
-    WHERE tabid = (
-        SELECT tabid 
-        FROM systables 
-        WHERE tabname = '${table}'
-    )
-    ORDER BY colno;" | dbaccess - 2>&1 | tee -a "$LOG_FILE"
-}
-
-# Get string columns for a table (with debug output)
-get_table_columns() {
-    local db=$1
-    local table=$2
-    
-    log "DEBUG" "Looking for string columns in table $table" "$LOG_FILE"
-    
-    # Show table metadata first
-    show_table_info "$db" "$table"
-    
-    # Try getting the first string column
     local query="database $db;
-    SELECT FIRST 1 colname 
-    FROM syscolumns 
-    WHERE tabid = (
-        SELECT tabid 
-        FROM systables 
-        WHERE tabname = '${table}'
-    )
-    AND coltype IN (0, 40, 45)
-    AND collength > 0;"
+    SELECT TRIM(colname) as colname
+    FROM syscolumns c, systables t
+    WHERE c.tabid = t.tabid 
+    AND t.tabname = '${table}'
+    AND t.tabtype = 'T'
+    AND c.coltype = 13
+    AND c.collength > 0
+    ORDER BY c.colno
+    FETCH FIRST 1 ROW ONLY;"
     
-    log "DEBUG" "Executing query: $query" "$LOG_FILE"
-    
-    local result=$(echo "$query" | dbaccess - 2>&1)
-    log "DEBUG" "Query result: $result" "$LOG_FILE"
-    
-    echo "$result" | grep -v "colname" | grep -v "^$" | tr -d ' '
+    echo "$query" | dbaccess - 2>/dev/null | grep -v "colname" | grep -v "^$" | tr -d ' '
 }
 
 # Mark table data and store original values
@@ -71,8 +34,9 @@ mark_table_data() {
     local sample_count=$4
     local backup_file="$WORK_DIR/${table}_original_values.txt"
     
-    # Get the first string column with debug output
-    local first_column=$(get_table_columns "$db" "$table")
+    # Get column name first, without mixing with debug output
+    local first_column
+    first_column=$(get_first_string_column "$db" "$table")
     
     if [ -z "$first_column" ]; then
         log "WARNING" "No string columns found in table $table" "$LOG_FILE"
@@ -81,15 +45,12 @@ mark_table_data() {
     
     log "DEBUG" "Using column '$first_column' for marking in table '$table'" "$LOG_FILE"
     
-    # Show sample of current data
-    echo "database $db;
-    SELECT FIRST 1 ${first_column} 
-    FROM ${table};" | dbaccess - 2>&1 | tee -a "$LOG_FILE"
-    
     # Backup original values before marking
-    echo "database $db;
+    local backup_query="database $db;
     SELECT FIRST ${sample_count} ${first_column} 
-    FROM ${table};" | dbaccess - | grep -v "^$" | grep -v "${first_column}" > "$backup_file"
+    FROM ${table};"
+    
+    echo "$backup_query" | dbaccess - 2>/dev/null | grep -v "^$" | grep -v "${first_column}" > "$backup_file"
     
     log "DEBUG" "Stored original values for $table in $backup_file" "$LOG_FILE"
     
@@ -98,39 +59,18 @@ mark_table_data() {
     UPDATE FIRST ${sample_count} ${table} 
     SET ${first_column} = '${marker}' || ${first_column};"
     
-    log "DEBUG" "Executing update: $update_query" "$LOG_FILE"
-    echo "$update_query" | dbaccess - 2>&1 | tee -a "$LOG_FILE"
+    echo "$update_query" | dbaccess - >/dev/null 2>&1
     
     # Verify the update happened
     local count_query="database $db;
     SELECT COUNT(*) FROM ${table} 
     WHERE ${first_column} LIKE '${marker}%';"
     
-    log "DEBUG" "Checking count with: $count_query" "$LOG_FILE"
-    local marked_count=$(echo "$count_query" | dbaccess - | grep -v "^$" | grep -v "count" | tr -d ' ')
+    local marked_count
+    marked_count=$(echo "$count_query" | dbaccess - 2>/dev/null | grep -v "^$" | grep -v "count" | tr -d ' ')
     
-    log "INFO" "Marked $marked_count records in $table" "$LOG_FILE"
+    log "INFO" "Marked ${marked_count:-0} records in $table" "$LOG_FILE"
     
-    return $?
-}
-
-# Test database connection
-test_db_connection() {
-    local db_name=$1
-    if ! echo "database $db_name; SELECT FIRST 1 * FROM systables;" | dbaccess - >/dev/null 2>&1; then
-        log "ERROR" "Cannot connect to database: $db_name" "$LOG_FILE"
-        return 1
-    fi
-    return 0
-}
-
-# Function to check if table exists
-check_table_exists() {
-    local db=$1
-    local table=$2
-    local exists=$(echo "database $db; SELECT tabname FROM systables WHERE tabname='$table';" | \
-                  dbaccess - 2>/dev/null | grep -v "tabname" | grep -v "^$" | grep "$table")
-    [ -n "$exists" ]
     return $?
 }
 
@@ -142,8 +82,9 @@ verify_marked_records() {
     local expected_count=$4
     local backup_file="$WORK_DIR/${table}_original_values.txt"
     
-    # Get the first string column (reuse the same function)
-    local first_column=$(get_table_columns "$db" "$table")
+    # Get column name without debug output interference
+    local first_column
+    first_column=$(get_first_string_column "$db" "$table")
     
     if [ -z "$first_column" ]; then
         log "WARNING" "No string columns found in table $table" "$LOG_FILE"
@@ -151,9 +92,12 @@ verify_marked_records() {
     fi
     
     # Check marked records exist
-    local marked_count=$(echo "database $db;
+    local count_query="database $db;
     SELECT COUNT(*) FROM ${table} 
-    WHERE ${first_column} LIKE '${marker}%';" | dbaccess - | grep -v "^$" | grep -v "count" | tr -d ' ')
+    WHERE ${first_column} LIKE '${marker}%';"
+    
+    local marked_count
+    marked_count=$(echo "$count_query" | dbaccess - 2>/dev/null | grep -v "^$" | grep -v "count" | tr -d ' ')
     
     if [ -z "$marked_count" ] || [ "$marked_count" -lt "$expected_count" ]; then
         log "ERROR" "Table $table verification failed: Expected $expected_count marked records, found ${marked_count:-0}" "$LOG_FILE"
@@ -164,9 +108,12 @@ verify_marked_records() {
     local mismatch_count=0
     while IFS= read -r original_value; do
         local expected_value="${marker}${original_value}"
-        local found=$(echo "database $db;
+        local verify_query="database $db;
         SELECT COUNT(*) FROM ${table}
-        WHERE ${first_column} = '${expected_value}';" | dbaccess - | grep -v "^$" | grep -v "count" | tr -d ' ')
+        WHERE ${first_column} = '${expected_value}';"
+        
+        local found
+        found=$(echo "$verify_query" | dbaccess - 2>/dev/null | grep -v "^$" | grep -v "count" | tr -d ' ')
         
         if [ "$found" -ne 1 ]; then
             ((mismatch_count++))
@@ -209,9 +156,10 @@ run_all_verifications() {
     
     # Verify essential records
     while IFS= read -r id; do
-        local count=$(echo "database $db;
+        local count
+        count=$(echo "database $db;
         SELECT COUNT(*) FROM ${PRIMARY_TABLE} 
-        WHERE ${PRIMARY_KEY} = $id;" | dbaccess - | grep -v "^$" | grep -v "count" | tr -d ' ')
+        WHERE ${PRIMARY_KEY} = $id;" | dbaccess - 2>/dev/null | grep -v "^$" | grep -v "count" | tr -d ' ')
         
         if [ -z "$count" ] || [ "$count" -ne 1 ]; then
             log "ERROR" "Essential record $id not found in table $PRIMARY_TABLE" "$LOG_FILE"
@@ -223,3 +171,70 @@ run_all_verifications() {
     
     return $status
 }
+
+# Debug function for showing table metadata
+show_table_info() {
+    local db=$1
+    local table=$2
+    
+    log "DEBUG" "Getting metadata for table: $table" "$LOG_FILE"
+    
+    # Show table ID
+    echo "database $db;
+    SELECT tabid, tabname, owner 
+    FROM systables 
+    WHERE tabname = '${table}';" | dbaccess - 2>&1 | tee -a "$LOG_FILE"
+    
+    # Show column information
+    echo "database $db;
+    SELECT colno, colname, coltype, collength
+    FROM syscolumns c
+    WHERE tabid = (
+        SELECT tabid 
+        FROM systables 
+        WHERE tabname = '${table}'
+    )
+    ORDER BY colno;" | dbaccess - 2>&1 | tee -a "$LOG_FILE"
+}
+
+# Get string columns for a table (fixed for correct Informix types)
+get_table_columns() {
+    local db=$1
+    local table=$2
+    
+    log "DEBUG" "Looking for string columns in table $table" "$LOG_FILE"
+    
+    # Get the first VARCHAR column (type 13)
+    local result=$(echo "database $db;
+    SELECT FIRST 1 TRIM(colname) as colname
+    FROM syscolumns c, systables t
+    WHERE c.tabid = t.tabid 
+    AND t.tabname = '${table}'
+    AND t.tabtype = 'T'
+    AND c.coltype = 13
+    AND c.collength > 0
+    ORDER BY c.colno;" | dbaccess - | grep -v "colname" | grep -v "^$" | tr -d ' ')
+    
+    echo "$result"
+}
+
+# Test database connection
+test_db_connection() {
+    local db_name=$1
+    if ! echo "database $db_name; SELECT FIRST 1 * FROM systables;" | dbaccess - >/dev/null 2>&1; then
+        log "ERROR" "Cannot connect to database: $db_name" "$LOG_FILE"
+        return 1
+    fi
+    return 0
+}
+
+# Function to check if table exists
+check_table_exists() {
+    local db=$1
+    local table=$2
+    local exists=$(echo "database $db; SELECT tabname FROM systables WHERE tabname='$table';" | \
+                  dbaccess - 2>/dev/null | grep -v "tabname" | grep -v "^$" | grep "$table")
+    [ -n "$exists" ]
+    return $?
+}
+
