@@ -110,16 +110,16 @@ INSERT INTO employees (customer_id, name, email, address, phone)
     VALUES (1002, 'EssentialEmp3', 'emp3@essential.com', '791 Work St', '555-2003');
 
 -- Projects for essential customers
-INSERT INTO projects (customer_id, project_name, name1, name2)
-    VALUES (1001, 'EssentialProj1', 'Essential', 'Project1');
-INSERT INTO projects (customer_id, project_name, name1, name2)
-    VALUES (1001, 'EssentialProj2', 'Essential', 'Project2');
-INSERT INTO projects (customer_id, project_name, name1, name2)
-    VALUES (1002, 'EssentialProj3', 'Essential', 'Project3');
+INSERT INTO projects (customer_id, project_name, name1, name2, combo_name)
+    VALUES (1001, 'EssentialProj1', 'Essential', 'Project1', 'Essential-&-Project1');
+INSERT INTO projects (customer_id, project_name, name1, name2, combo_name)
+    VALUES (1001, 'EssentialProj2', 'Essential', 'Project2', 'Essential-&-Project2');
+INSERT INTO projects (customer_id, project_name, name1, name2, combo_name)
+    VALUES (1002, 'EssentialProj3', 'Essential', 'Project3', 'Essential-&-Project3');
 
 -- Repositories for essential projects
-INSERT INTO repositories (project_id, owner_name, repo_name)
-    SELECT id, 'Essential', 'Repo' || CAST(id AS VARCHAR(10))
+INSERT INTO repositories (project_id, owner_name, repo_name, full_path)
+    SELECT id, 'Essential', 'Repo' || CAST(id AS VARCHAR(10)), 'Essential/Repo' || CAST(id AS VARCHAR(10))
     FROM projects 
     WHERE customer_id IN (1001, 1002);
 
@@ -151,13 +151,14 @@ INSERT INTO employees (customer_id, name, email, address, phone)
         '555-' || LPAD(CAST(id AS VARCHAR(10)), 4, '0')
     FROM sequence_table WHERE id <= 50;
 
--- 200 test projects with customer assignments
-INSERT INTO projects (customer_id, project_name, name1, name2)
+-- 200 test projects with customer assignments and combo_name
+INSERT INTO projects (customer_id, project_name, name1, name2, combo_name)
     SELECT 
         1002 + MOD(id, 100), -- Assign to random customers after essential ones
         'Project' || CAST(id AS VARCHAR(10)),
         'FirstName' || CAST(id AS VARCHAR(10)),
-        'LastName' || CAST(id AS VARCHAR(10))
+        'LastName' || CAST(id AS VARCHAR(10)),
+        'FirstName' || CAST(id AS VARCHAR(10)) || '-&-' || 'LastName' || CAST(id AS VARCHAR(10))
     FROM sequence_table WHERE id <= 200;
 
 -- First verify our project range
@@ -178,12 +179,13 @@ UPDATE repo_sequence
 SET project_id = (SELECT MIN(id) FROM projects) + MOD((id - 1), 
     (SELECT COUNT(*) FROM projects));
 
--- Simple insert from sequence
-INSERT INTO repositories (project_id, owner_name, repo_name)
+-- Insert repositories with full_path
+INSERT INTO repositories (project_id, owner_name, repo_name, full_path)
 SELECT 
     project_id,
     'Owner' || id,
-    'Repo' || id
+    'Repo' || id,
+    'Owner' || id || '/' || 'Repo' || id
 FROM repo_sequence 
 WHERE id <= 300;
 

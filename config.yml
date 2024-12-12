@@ -2,7 +2,7 @@ databases:
   source:
     name: test_live
   target:
-    name: test_train
+    name: temp_verify
   testing:
     test_live: test_live
     temp_verify: temp_verify

@@ -4,13 +4,6 @@
 set -e
 set -o pipefail
 
-# Check for jq dependency
-if ! command -v jq &> /dev/null; then
-    echo "Error: jq is required but not installed"
-    echo "On RHEL systems, install it with: sudo yum install jq"
-    exit 1
-fi
-
 # Get script directory for relative paths 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 echo "DEBUG[1]: SCRIPT_DIR=$SCRIPT_DIR"
@@ -34,7 +27,10 @@ LOG_FILE="${LOG_DIR}/${LOG_PREFIX}${TIMESTAMP}.log"
 SOURCE_DB=$(yq e '.databases.source.name' "$CONFIG_FILE")
 TARGET_DB=$(yq e '.databases.target.name' "$CONFIG_FILE")
 
-# Start export process
+# Export SOURCE_DB for child scripts
+export SOURCE_DB
+export WORK_DIR
+
 log "INFO" "Starting export process" "$LOG_FILE"
 log "INFO" "Source database: $SOURCE_DB" "$LOG_FILE"
 log "INFO" "Target database: $TARGET_DB" "$LOG_FILE"
@@ -64,9 +60,6 @@ sleep 1
 # Debug: List files in export directory
 log "INFO" "Checking export directory contents..." "$LOG_FILE"
 ls -la "$WORK_DIR/${SOURCE_DB}.exp" >> "$LOG_FILE"
-
-# Move to export directory
-cd "$WORK_DIR/${SOURCE_DB}.exp"
 
 # Apply data scrubbing if scrub_data.sh exists
 if [ -f "$SCRIPT_DIR/scripts/scrub_data.sh" ]; then
