@@ -8,26 +8,9 @@ databases:
     temp_verify: temp_verify
     verification_marker: "VERIFY_TEST_STRING_XYZ_"
     cleanup_script: remove_verify_db.sh
-
-# essential records will be exported from the primary table, along with related records containing the foreign_key_column
-tables:
-  primary_table:
-    name: "customers"  # Using customers as primary since it has the most relationships
-    primary_key: "id"
-  dependencies:
-    foreign_key_column: "customer_id"  # Common foreign key pattern
-    primary_key: "id"
-
+    
 export:
-  sample_percentage: 50
   random_seed: 42
-  batch_size: 1000
-
-essential_records:
-  records:
-    - id: 1001
-    - id: 1002
-  include_dependencies: true
 
 excluded_tables:
   - training_config
@@ -45,7 +28,6 @@ verification:
     sample_tables:
       - customers
       - employees
-  excluded_table_samples: 3
 
 scrubbing:
   random_names:
@@ -94,7 +76,7 @@ scrubbing:
           random_style: github
         - source_field: name2
           random_style: github
-      separator: "-&-"
+      separator: " -&- "
       target_field: combo_name
     - table: repositories
       fields:

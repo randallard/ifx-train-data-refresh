@@ -84,9 +84,9 @@ if [ -f "$SCRIPT_DIR/scripts/scrub_data.sh" ]; then
         exit 1
     }
 else
-    log "WARNING" "scrub_data.sh not found - skipping data scrubbing" "$LOG_FILE"
-    cp "$WORK_DIR/${SOURCE_DB}.exp/${SOURCE_DB}.sql" "$WORK_DIR/${SOURCE_DB}.exp/${SOURCE_DB}_scrubbed.sql"
+    log "ERROR" "scrub_data.sh not found - skipping data scrubbing" "$LOG_FILE"
+    exit 1
 fi
 
 log "INFO" "Export process completed successfully" "$LOG_FILE"
-echo "Export completed. Output file: ${WORK_DIR}/${SOURCE_DB}.exp/${SOURCE_DB}_scrubbed.sql"
+echo "Export completed. Output directory: ${WORK_DIR}/${SOURCE_DB}.exp"
