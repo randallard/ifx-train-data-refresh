@@ -9,6 +9,7 @@ databases:
     verification_marker: "VERIFY_TEST_STRING_XYZ_"
     cleanup_script: remove_verify_db.sh
 
+# essential records will be exported from the primary table, along with related records containing the foreign_key_column
 tables:
   primary_table:
     name: "customers"  # Using customers as primary since it has the most relationships
@@ -18,7 +19,7 @@ tables:
     primary_key: "id"
 
 export:
-  sample_percentage: 20
+  sample_percentage: 50
   random_seed: 42
   batch_size: 1000
 

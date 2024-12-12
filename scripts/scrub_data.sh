@@ -103,6 +103,62 @@ generate_record() {
     echo "$id|$project_id|$new_owner|$new_repo|$new_owner/$new_repo|"
 }
 
+get_dependent_tables_and_unls() {
+    local sql_file="$1"
+    local foreign_key="$2"
+    local table_data=()
+    
+    # First get all table definitions containing the foreign key
+    while IFS= read -r line; do
+        # Extract table name from CREATE TABLE statement
+        if [[ $line =~ CREATE[[:space:]]+TABLE[[:space:]]+([[:alnum:]_]+)[[:space:]]* ]]; then
+            table_name="${BASH_REMATCH[1]}"
+            
+            # Read the next lines until we find the closing parenthesis
+            while IFS= read -r column_line; do
+                # Skip if we hit the end of table definition
+                [[ $column_line == *")"* ]] && break
+                
+                # Check if this column matches our foreign key
+                if [[ $column_line =~ [[:space:]]*${foreign_key}[[:space:]]+ ]]; then
+                    # Get the corresponding UNL file
+                    unl_file=$(grep -A 5 "INSERT INTO.*${table_name}" "$sql_file" | 
+                              grep -o "'.*\.unl'" | 
+                              head -n 1 | 
+                              tr -d "'")
+                    
+                    if [ -n "$unl_file" ]; then
+                        table_data+=("$table_name:$unl_file")
+                        echo "INFO: Found dependent table $table_name with UNL file $unl_file"
+                    fi
+                    break
+                fi
+            done
+        fi
+    done < "$sql_file"
+    
+    # Return the array
+    printf "%s\n" "${table_data[@]}"
+}
+
+# Get foreign key from config
+foreign_key=$(yq e '.tables.dependencies.foreign_key_column' "$CONFIG_FILE")
+
+# Create arrays for tables and their UNL files
+declare -A DEPENDENT_TABLE_UNLS
+while IFS=: read -r table unl; do
+    if [ -n "$table" ] && [ -n "$unl" ]; then
+        DEPENDENT_TABLE_UNLS["$table"]="$unl"
+        log "INFO" "Found dependent table '$table' with UNL file: $unl" "$LOG_FILE"
+    fi
+done < <(get_dependent_tables_and_unls "$INPUT_FILE" "$foreign_key")
+
+# Log what we found
+log "INFO" "Found ${#DEPENDENT_TABLE_UNLS[@]} tables with foreign key '$foreign_key':" "$LOG_FILE"
+for table in "${!DEPENDENT_TABLE_UNLS[@]}"; do
+    log "DEBUG" "  $table -> ${DEPENDENT_TABLE_UNLS[$table]}" "$LOG_FILE"
+done
+
 # Process repositories handling with proper record structure
 process_repository() {
     local id=$1
@@ -276,6 +332,16 @@ log "INFO" "Starting data scrubbing process" "$LOG_FILE"
 # Move to export directory
 cd "$WORK_DIR/${SOURCE_DB}.exp" || {
     log "ERROR" "Failed to change to export directory" "$LOG_FILE"
+    exit 1
+}
+
+# Remove excluded tables from export
+log "INFO" "Removing excluded tables from export..." "$LOG_FILE"
+"$SCRIPT_DIR/remove_excluded_tables.sh" \
+    "$CONFIG_FILE" \
+    "$WORK_DIR/${SOURCE_DB}.exp/${SOURCE_DB}.sql" \
+    "$WORK_DIR/${SOURCE_DB}.exp/${SOURCE_DB}_cleaned.sql" || {
+    log "ERROR" "Failed to remove excluded tables" "$LOG_FILE"
     exit 1
 }
 
