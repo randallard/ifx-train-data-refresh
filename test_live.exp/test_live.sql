@@ -24,7 +24,7 @@ create table "informix".customers
     email varchar(100),
     address varchar(200),
     phone varchar(20)
-  );
+  ) extent size 16 next size 16 lock mode row;
 
 revoke all on "informix".customers from "public" as "informix";
 
@@ -40,7 +40,7 @@ create table "informix".employees
     email varchar(100),
     address varchar(200),
     phone varchar(20)
-  );
+  ) extent size 16 next size 16 lock mode row;
 
 revoke all on "informix".employees from "public" as "informix";
 
@@ -56,7 +56,7 @@ create table "informix".projects
     name1 varchar(50),
     name2 varchar(50),
     combo_name varchar(150)
-  );
+  ) extent size 16 next size 16 lock mode row;
 
 revoke all on "informix".projects from "public" as "informix";
 
@@ -71,7 +71,7 @@ create table "informix".repositories
     owner_name varchar(50),
     repo_name varchar(50),
     full_path varchar(150)
-  );
+  ) extent size 16 next size 16 lock mode row;
 
 revoke all on "informix".repositories from "public" as "informix";
 
@@ -84,7 +84,7 @@ create table "informix".training_config
     id serial not null ,
     config_key varchar(50),
     config_value varchar(200)
-  );
+  ) extent size 16 next size 16 lock mode row;
 
 revoke all on "informix".training_config from "public" as "informix";
 
@@ -97,7 +97,7 @@ create table "informix".train_specific_data
     id serial not null ,
     data_key varchar(50),
     data_value varchar(255)
-  );
+  ) extent size 16 next size 16 lock mode row;
 
 revoke all on "informix".train_specific_data from "public" as "informix";
 
@@ -134,7 +134,6 @@ grant update on "informix".train_specific_data to "public" as "informix";
 grant insert on "informix".train_specific_data to "public" as "informix";
 grant delete on "informix".train_specific_data to "public" as "informix";
 grant index on "informix".train_specific_data to "public" as "informix";
-
 
 
 

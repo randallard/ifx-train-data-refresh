@@ -1,0 +1,10 @@
+1|database_mode|training|
+2|log_level|debug|
+3|cache_enabled|true|
+4|max_connections|500|
+5|timeout_seconds|3600|
+6|debug_mode|verbose|
+7|api_version|2.0.1|
+8|environment|test|
+9|region|us-east|
+10|cluster_size|medium|
