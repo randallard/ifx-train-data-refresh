@@ -1,0 +1,86 @@
+databases:
+  source:
+    name: test_live
+  target:
+    name: temp_verify
+  testing:
+    test_live: test_live
+    temp_verify: temp_verify
+    verification_marker: "VERIFY_TEST_STRING_XYZ_"
+    cleanup_script: remove_verify_db.sh
+
+export:
+  random_seed: 42
+
+excluded_tables:
+  - training_config
+  - train_specific_data
+
+verification:
+  logging:
+    directory: logs
+    prefix: verify_
+  checksums:
+    enabled: true
+    algorithm: md5sum
+  record_counts:
+    enabled: true
+    sample_tables:
+      - customers
+      - employees
+
+scrubbing:
+  random_names:
+    - table: customers
+      fields: [first_name, last_name]
+      style: github
+    - table: employees
+      fields: [name]
+      style: github
+    - table: projects
+      fields: [project_name]
+      style: github
+    - table: repositories
+      fields: [repo_name]
+      style: github
+
+standardize:
+  address:
+    value: "123 Training St, Test City, ST 12345"
+    fields:
+      - table: customers
+        field: address
+      - table: employees
+        field: address
+  phone:
+    value: "555-0123"
+    fields:
+      - table: customers
+        field: phone
+      - table: employees
+        field: phone
+  email:
+    value: "test@example.com"
+    fields:
+      - table: customers
+        field: email
+      - table: employees
+        field: email
+
+combination_fields:
+  - table: projects
+    fields:
+      - source_field: name1
+        random_style: github
+      - source_field: name2
+        random_style: github
+    separator: " -&- "
+    target_field: combo_name
+  - table: repositories
+    fields:
+      - source_field: owner_name
+        random_style: github
+      - source_field: repo_name
+        random_style: github
+    separator: "/"
+    target_field: full_path
