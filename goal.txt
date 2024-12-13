@@ -1,0 +1,16 @@
+I need a configurable rust project to take the informix database export files and a config.yml, 
+- copy [source].exp directory to [target].exp and update [target].exp in the following ways
+-- remove the .unl files associated with tables specified in the config to be excluded
+-- use the .sql file to get a mapping of all table names to .unl filenames
+-- use the .sql file "create" statements to get an index to each field in each table so that the field values can be updated in the pipe delimited .unl files can be updated 
+-- update all fields specified in the config for the following
+---- Scrubbing
+------ for each table specified, update the fields specified to random names 
+-------- create random names by alternating between random words from the adjectives.txt and the nouns.txt files
+---- Standardize
+------ for each type specified, and table specified, update the fields specified to the value specified
+---- Combination Fields
+------ for each table specified, update the target_field but combining the fields specified, separated by the separator specified
+-- remove the .sql file
+-- create a new .sql file that removes all records from each table with a related .unl file and 
+---- loads all records from the .unl files
