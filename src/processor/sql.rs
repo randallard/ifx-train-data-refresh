@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use crate::error::Error;
 use regex::Regex;
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TableInfo {
     pub unl_file: String,
     pub fields: Vec<String>,

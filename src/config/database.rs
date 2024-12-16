@@ -1,18 +1,18 @@
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct DatabaseConfig {
     pub source: DbInstance,
     pub target: DbInstance,
     pub testing: TestingConfig,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct DbInstance {
     pub name: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct TestingConfig {
     pub test_live: String,
     pub temp_verify: String,

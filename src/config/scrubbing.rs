@@ -1,31 +1,31 @@
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct ScrubbingConfig {
     pub random_names: Vec<RandomNameConfig>,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct RandomNameConfig {
     pub table: String,
     pub fields: Vec<String>,
     pub style: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct StandardizeConfig {
     pub address: StandardizeField,
     pub phone: StandardizeField,
     pub email: StandardizeField,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct StandardizeField {
     pub value: String,
     pub fields: Vec<TableField>,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct TableField {
     pub table: String,
     pub field: String,

@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct CombinationFieldConfig {
     pub table: String,
     pub fields: Vec<SourceField>,
@@ -8,7 +8,7 @@ pub struct CombinationFieldConfig {
     pub target_field: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct SourceField {
     pub source_field: String,
     pub random_style: String,

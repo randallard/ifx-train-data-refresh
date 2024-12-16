@@ -15,7 +15,7 @@ pub use self::verification::VerificationConfig;
 pub use self::scrubbing::{RandomNameConfig, ScrubbingConfig, StandardizeConfig};
 pub use self::combination::CombinationFieldConfig;
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Config {
     pub databases: DatabaseConfig,
     pub excluded_tables: Vec<String>,
