@@ -12,7 +12,7 @@ use crate::error::Error;
 pub use self::database::DatabaseConfig;
 pub use self::export::ExportConfig;
 pub use self::verification::VerificationConfig;
-pub use self::scrubbing::{ScrubbingConfig, StandardizeConfig};
+pub use self::scrubbing::{RandomNameConfig, ScrubbingConfig, StandardizeConfig};
 pub use self::combination::CombinationFieldConfig;
 
 #[derive(Debug, Deserialize, PartialEq)]

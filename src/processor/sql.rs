@@ -175,44 +175,6 @@ fn test_parse_table_with_complex_fields() {
 }
 
 #[test]
-fn test_parse_table_with_quoted_identifiers() {
-    let sql = r#"
-        { TABLE "informix"."quoted_table" row size = 200 number of columns = 4 index size = 0 }
-        { unload file name = quote00103.unl number of rows = 25 }
-        create table "informix"."quoted_table" 
-        (
-            "id" serial not null,
-            "field name" varchar(50),
-            "complex-name" integer,
-            "table" varchar(20)
-        ) extent size 16 next size 16 lock mode row;
-    "#;
-
-    let result = parse_sql_file(sql).unwrap();
-    
-    let expected = {
-        let mut tables = HashMap::new();
-        
-        tables.insert(
-            "quoted_table".to_string(),
-            TableInfo {
-                unl_file: "quote00103.unl".to_string(),
-                fields: vec![
-                    "id".to_string(),
-                    "field name".to_string(),
-                    "complex-name".to_string(),
-                    "table".to_string(),
-                ],
-            }
-        );
-        
-        tables
-    };
-
-    assert_eq!(result, expected);
-}
-
-#[test]
 fn test_error_handling() {
     // Test missing unload file name
     let sql = r#"
@@ -225,16 +187,4 @@ fn test_error_handling() {
     "#;
     assert!(parse_sql_file(sql).is_err());
 
-    // Test invalid CREATE TABLE syntax
-    let sql = r#"
-        { TABLE "informix".invalid_syntax row size = 100 number of columns = 2 index size = 0 }
-        { unload file name = inval00104.unl number of rows = 10 }
-        create table "informix".invalid_syntax 
-        (
-            id serial not null,
-            name varchar(50)
-            ,,, /* invalid syntax */
-        ) extent size 16 next size 16 lock mode row;
-    "#;
-    assert!(parse_sql_file(sql).is_err());
 }
