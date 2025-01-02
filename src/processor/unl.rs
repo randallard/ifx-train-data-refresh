@@ -9,7 +9,7 @@ use crate::processor::sql::TableInfo;
 // Struct to represent a row in a UNL file
 #[derive(Debug, PartialEq)]
 pub struct UnlRow {
-    fields: Vec<String>,
+    pub fields: Vec<String>,
 }
 
 impl UnlRow {
@@ -81,7 +81,7 @@ impl UnlProcessor {
         Ok(())
     }
 
-    fn process_row(&self, table_name: &str, row: &mut UnlRow) -> Result<(), Error> {
+    pub fn process_row(&self, table_name: &str, row: &mut UnlRow) -> Result<(), Error> {
         // Apply random name scrubbing
         for config in &self.config.scrubbing.random_names {
             if config.table == table_name {
@@ -154,39 +154,51 @@ impl UnlProcessor {
         for combo_config in &self.config.combination_fields {
             if combo_config.table == table_name {
                 let mut combined_values = Vec::new();
-
+    
                 // Collect all source field values
                 for field_config in &combo_config.fields {
-                    if let Some(idx) = find_field_index_by_table(
+                    let idx = find_field_index_by_table(
                         table_name,
                         &field_config.source_field,
                         &self.table_info
-                    )? {
-                        let value = if field_config.random_style.is_empty() {
-                            row.get_field(idx)
-                                .ok_or_else(|| Error::Processing("Field index out of bounds".to_string()))?
-                                .to_string()
-                        } else {
-                            self.generate_random_name(&field_config.random_style)?
-                        };
-                        combined_values.push(value);
-                    }
+                    )?
+                    .ok_or_else(|| Error::Processing(format!(
+                        "Source field '{}' not found in table '{}'",
+                        field_config.source_field,
+                        table_name
+                    )))?;
+    
+                    let value = row.get_field(idx)
+                        .ok_or_else(|| Error::Processing(format!(
+                            "Field index {} out of bounds for row with {} fields",
+                            idx,
+                            row.fields.len()
+                        )))?
+                        .to_string();
+                    combined_values.push(value);
                 }
-
-                // Combine values and set target field
-                if let Some(target_idx) = find_field_index_by_table(
+    
+                // Find target field index
+                let target_idx = find_field_index_by_table(
                     table_name,
                     &combo_config.target_field,
                     &self.table_info
-                )? {
-                    let combined = combined_values.join(&combo_config.separator);
-                    row.set_field(target_idx, combined)?;
-                }
+                )?
+                .ok_or_else(|| Error::Processing(format!(
+                    "Target field '{}' not found in table '{}'",
+                    combo_config.target_field,
+                    table_name
+                )))?;
+    
+                // Combine values and set target field
+                let combined = combined_values.join(&combo_config.separator);
+                row.set_field(target_idx, combined)?;
             }
         }
-
+    
         Ok(())
     }
+
 }
 
 // Function to find field index in a table schema

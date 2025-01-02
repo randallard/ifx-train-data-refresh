@@ -1,6 +1,6 @@
 mod copy;
-mod sql;
-mod unl;
+pub(crate) mod sql;
+pub(crate) mod unl;
 mod random;
 
 use std::collections::HashMap;
@@ -230,7 +230,13 @@ impl DbExportProcessor {
             fs::remove_dir_all(&self.target_path)?;
         }
         fs::create_dir_all(&self.target_path)?;
-
+    
+        // Create a mapping of UNL filenames to table names for quick lookup
+        let unl_to_table: HashMap<String, String> = self.table_info
+            .iter()
+            .map(|(table_name, info)| (info.unl_file.clone(), table_name.clone()))
+            .collect();
+    
         for entry in fs::read_dir(&self.source_path)? {
             let entry = entry?;
             let path = entry.path();
@@ -238,13 +244,15 @@ impl DbExportProcessor {
             // Skip excluded UNL files
             if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
                 if file_name.ends_with(".unl") {
-                    let table_name = file_name.trim_end_matches(".unl");
-                    if self.config.excluded_tables.iter().any(|t| table_name.starts_with(t)) {
-                        continue;
+                    // Look up the actual table name from the UNL filename
+                    if let Some(table_name) = unl_to_table.get(file_name) {
+                        if self.config.excluded_tables.contains(table_name) {
+                            continue;
+                        }
                     }
                 }
             }
-
+    
             let target = self.target_path.join(path.file_name().unwrap());
             if path.is_file() {
                 fs::copy(&path, &target)?;
@@ -252,7 +260,7 @@ impl DbExportProcessor {
         }
         Ok(())
     }
-
+    
     fn generate_sql(&self) -> Result<(), Error> {
         let mut sql_content = String::new();
         sql_content.push_str("-- Generated SQL for loading processed data\n\n");
@@ -569,4 +577,137 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_excluded_tables_not_copied() -> Result<(), Error> {
+        // Set up test environment
+        let temp_dir = tempdir().map_err(|e| Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Failed to create temp dir: {}", e)
+        )))?;
+        
+        let source_dir = temp_dir.path().join("source");
+        let target_dir = temp_dir.path().join("target");
+        let log_dir = temp_dir.path().join("logs");
+    
+        // Create directories
+        fs::create_dir_all(&source_dir).map_err(Error::Io)?;
+        fs::create_dir_all(&log_dir).map_err(Error::Io)?;
+    
+        // Create test SQL file with excluded tables
+        let sql_content = r#"
+            { DATABASE test_live  delimiter | }
+    
+            { TABLE "informix".customers row size = 429 number of columns = 6 index size = 0 }
+            { unload file name = custo00100.unl number of rows = 73 }
+            create table "informix".customers 
+            (
+                id serial not null,
+                first_name varchar(50),
+                last_name varchar(50),
+                email varchar(100),
+                address varchar(200),
+                phone varchar(20)
+            ) extent size 16 next size 16 lock mode row;
+    
+            { TABLE "informix".training_config row size = 256 number of columns = 3 index size = 0 }
+            { unload file name = train00104.unl number of rows = 10 }
+            create table "informix".training_config 
+            (
+                id serial not null,
+                config_key varchar(50),
+                config_value varchar(200)
+            ) extent size 16 next size 16 lock mode row;
+    
+            { TABLE "informix".train_specific_data row size = 311 number of columns = 3 index size = 0 }
+            { unload file name = train00105.unl number of rows = 10 }
+            create table "informix".train_specific_data 
+            (
+                id serial not null,
+                data_key varchar(50),
+                data_value varchar(255)
+            ) extent size 16 next size 16 lock mode row;
+        "#;
+        fs::write(source_dir.join("test_live.sql"), sql_content).map_err(Error::Io)?;
+    
+        // Create test UNL files
+        let test_data = "1|test|test|\n";
+        fs::write(source_dir.join("custo00100.unl"), test_data).map_err(Error::Io)?;
+        fs::write(source_dir.join("train00104.unl"), test_data).map_err(Error::Io)?;
+        fs::write(source_dir.join("train00105.unl"), test_data).map_err(Error::Io)?;
+    
+        // Create test configuration
+        let config = Config::from_str(r#"
+            databases:
+                source:
+                    name: test_live
+                target:
+                    name: temp_verify
+                testing:
+                    test_live: test_live
+                    temp_verify: temp_verify
+                    verification_marker: "VERIFY_TEST_STRING_XYZ_"
+                    cleanup_script: remove_verify_db.sh
+    
+            export:
+                random_seed: 42
+    
+            excluded_tables:
+                - training_config
+                - train_specific_data
+    
+            verification:
+                logging:
+                    directory: logs
+                    prefix: verify_
+                checksums:
+                    enabled: true
+                    algorithm: md5sum
+                record_counts:
+                    enabled: true
+                    sample_tables: ["customers"]
+    
+            scrubbing:
+                random_names: []
+            standardize:
+                address:
+                    value: ""
+                    fields: []
+                phone:
+                    value: ""
+                    fields: []
+                email:
+                    value: ""
+                    fields: []
+            combination_fields: []
+        "#)?;
+    
+        // Create and run processor
+        let processor = DbExportProcessor::new(
+            config,
+            source_dir,
+            target_dir.clone(),
+        )?;
+    
+        processor.process()?;
+    
+        // Verify files exist/don't exist as expected
+        assert!(target_dir.join("custo00100.unl").exists(), 
+            "Expected included table UNL file should exist");
+        assert!(!target_dir.join("train00104.unl").exists(), 
+            "Excluded table training_config UNL file should not exist");
+        assert!(!target_dir.join("train00105.unl").exists(), 
+            "Excluded table train_specific_data UNL file should not exist");
+    
+        // Verify SQL file was generated correctly
+        let generated_sql = fs::read_to_string(target_dir.join("load_data.sql"))?;
+        assert!(generated_sql.contains("DELETE FROM customers;"), 
+            "SQL should contain delete statement for included table");
+        assert!(!generated_sql.contains("DELETE FROM training_config;"), 
+            "SQL should not contain delete statement for excluded table training_config");
+        assert!(!generated_sql.contains("DELETE FROM train_specific_data;"), 
+            "SQL should not contain delete statement for excluded table train_specific_data");
+    
+        Ok(())
+    }    
 }
